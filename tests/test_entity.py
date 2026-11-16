@@ -141,19 +141,17 @@ def _own(user, name, status="disconnected"):
     return company
 
 
-# Owner, 2026-11-03: a company name is unique per PERSON, not across every customer - two
-# different businesses may share a name; one person may not have two companies called the same.
+# Owner, 2026-11-16: company names need not be unique, not even for one person (as in Xero,
+# where an organisation is its id and the name only a label). Replaces 2026-11-03's per-person rule.
 @pytest.mark.django_db
-def test_a_name_the_user_already_has_is_409_not_400(
+def test_a_name_the_user_already_has_may_be_used_again(
     client, auth, user, countries, currencies, modules
 ):
-    _own(user, "Taken Co")
+    first = _own(user, "Taken Co")
     resp = post_create(client, auth, entity_name="Taken Co", **STEP1)
-    assert resp.status_code == 409
-    # The wizard keys on the 409 alone and writes its own sentence (OnboardingApp.tsx).
-    assert resp.json() == {
-        "error": "You already have a company called “Taken Co”. Choose another name."
-    }
+    assert resp.status_code == 201
+    assert resp.json()["entity_id"] != str(first.id)
+    assert Entity.objects.filter(name="Taken Co").count() == 2
 
 
 @pytest.mark.django_db
@@ -167,11 +165,11 @@ def test_another_customer_s_company_name_may_be_used(
 
 
 @pytest.mark.django_db
-def test_the_name_is_trimmed_before_the_uniqueness_check(
+def test_the_name_is_trimmed_before_it_is_saved(
     client, auth, user, countries, currencies, modules
 ):
-    _own(user, "Trimmed Co")
-    assert post_create(client, auth, entity_name="  Trimmed Co  ", **STEP1).status_code == 409
+    entity_id = post_create(client, auth, entity_name="  Trimmed Co  ", **STEP1).json()["entity_id"]
+    assert Entity.objects.get(id=entity_id).name == "Trimmed Co"
 
 
 # ---------------------------------------------------------------------------
@@ -214,12 +212,13 @@ def test_idempotency_does_not_match_a_finalized_company(
     """DELIBERATELY NARROW: the key is (member, name, status='onboarding').
 
     If it matched a finalized company, re-submitting Step 1 would silently rebind the wizard
-    to a live company and start editing it. The correct answer is the name conflict.
+    to a live company and start editing it. The answer is a new company of the same name.
     """
     live = Entity.objects.create(id=str(uuid.uuid4()), name="Live Co", status="disconnected")
     UserEntity.objects.create(user_id=user.id, entity_id=live.id, role="admin")
     resp = post_create(client, auth, entity_name="Live Co", **STEP1)
-    assert resp.status_code == 409
+    assert resp.status_code == 201
+    assert resp.json()["entity_id"] != str(live.id)
 
 
 @pytest.mark.django_db
@@ -825,13 +824,11 @@ def test_resending_the_same_name_is_not_a_rename(client, user, entity, modules):
 
 
 @pytest.mark.django_db
-def test_renaming_to_a_name_the_user_already_has_is_409(client, auth, user, entity, modules):
+def test_renaming_to_a_name_the_user_already_has_is_allowed(client, auth, user, entity, modules):
     _own(user, "Other Co")
     resp = put_entity(client, auth, entity.id, entity_name="Other Co")
-    assert resp.status_code == 409
-    assert resp.json() == {
-        "error": "You already have a company called “Other Co”. Choose another name."
-    }
+    assert resp.status_code == 200
+    assert Entity.objects.filter(name="Other Co").count() == 2
 
 
 @pytest.mark.django_db
@@ -844,7 +841,7 @@ def test_renaming_to_another_customer_s_company_name_is_allowed(
 
 @pytest.mark.django_db
 def test_renaming_is_not_blocked_by_the_entity_s_own_name(client, auth, entity, modules):
-    """The uniqueness check excludes this entity, or no company could ever be re-saved."""
+    """Re-saving a company under its own name (trimmed) is a plain save."""
     resp = put_entity(client, auth, entity.id, entity_name="  Wizard Trading Co  ")
     assert resp.status_code == 200
 

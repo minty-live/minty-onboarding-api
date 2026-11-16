@@ -64,11 +64,11 @@ country is a 400 `"Choose the company's country."`, and no currency sent or deri
 country's registry row is a 400 `"Choose the company's currency."` — both before the company is
 created. A name over 100 characters (after the trim) is a 400 `"Entity name must be 100
 characters or fewer."` on create as on rename (`NAME_MAX`, 2026-10-26; create had no limit
-before). **A name is unique per person** (owner, 2026-11-03; it was unique across
-every customer): create and rename are 409 `"You already have a company called “X”. Choose
-another name."` only when the acting user already belongs to a company of that name
-(`entity_create.user_has_company_named`); another customer's company of the same name is no
-conflict. The wizard keys on the 409 alone and writes its own sentence. `PUT /entity/{id}` does not require a country or currency (a partial edit stays valid). Country and currency
+before). **Names need not be unique** (owner, 2026-11-16, as in Xero: a company is its id, the
+name a label; it was unique per person from 2026-11-03 and across every customer before):
+create and rename never refuse a name another company already has, the acting user's own
+included. Create still resumes an in-progress (`onboarding`, unarchived) company of the same
+name and member rather than making a twin (below). `PUT /entity/{id}` does not require a country or currency (a partial edit stays valid). Country and currency
 are **resolved against the registries** (`resolve.country_code` accepts alpha-2, alpha-3
 or a unique name; `currency_id` only queries once the value is a uuid) and never stored
 unvalidated — they are foreign keys; phone and email are checked the way the wizard does.

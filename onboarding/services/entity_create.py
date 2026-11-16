@@ -58,7 +58,7 @@ from minty_db.models import (
     UserEntity,
 )
 
-from core.exceptions import ConflictError, OnboardingValidationError
+from core.exceptions import OnboardingValidationError
 from onboarding.services.cash_settings import sync_cash_settings
 
 # Imported rather than redeclared: two lists each calling themselves canonical is exactly
@@ -193,28 +193,6 @@ def _seed_module_defaults(
     )
 
 
-def name_taken_message(name: str) -> str:
-    return f"You already have a company called “{name}”. Choose another name."
-
-
-def user_has_company_named(user_id, name: str, *, exclude_id=None) -> bool:
-    """Whether ``user_id`` already belongs to a company called ``name``.
-
-    Owner, 2026-11-03: a name is unique per person, not across every customer (it was global, so
-    a business could not use its own name if anyone else had). The wizard keys on the 409 alone.
-    """
-    entity_ids = [
-        str(eid)
-        for eid in UserEntity.objects.filter(user_id=str(user_id)).values_list(
-            "entity_id", flat=True
-        )
-    ]
-    found = Entity.objects.filter(id__in=entity_ids, name=name)
-    if exclude_id is not None:
-        found = found.exclude(id=exclude_id)
-    return found.exists()
-
-
 def find_resumable_entity(user_id, name: str) -> Entity | None:
     """An in-progress entity this user already created under this name, or None.
 
@@ -250,8 +228,9 @@ def create_entity_for_user(
     ``currency_info`` uuid. Callers resolve names to these first (onboarding/services/
     resolve.py) -- both columns are FKs and will not accept a display label.
 
-    Raises OnboardingValidationError for a missing name and ConflictError for a name clash;
-    the handlers in core/exceptions.py render those as 400 and 409.
+    Raises OnboardingValidationError for a missing name (a 400, core/exceptions.py). Names need
+    not be unique, not even for one person (owner, 2026-11-16, as in Xero): a finished company of
+    the same name is no clash, and only an in-progress one is resumed (above).
     """
     name = (entity_name or "").strip()
     if not name:
@@ -271,9 +250,6 @@ def create_entity_for_user(
             )
             existing.refresh_from_db(fields=["subscriber_user_id"])
         return existing, False
-
-    if user_has_company_named(user_id, name):
-        raise ConflictError(name_taken_message(name))
 
     # One transaction for the whole creation. Flask commits the entity before adding the
     # membership, which can leave a company nobody belongs to if the second commit fails --
