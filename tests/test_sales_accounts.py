@@ -116,3 +116,51 @@ def test_a_cashier_cannot_change_the_ticks(client, minty):
     assert resp.status_code == 403
     minty.refresh_from_db()
     assert minty.sells_electronic is None
+
+
+# ---- each sales account's code (owner, 2026-11-17: "each sales should be tied") ----------------
+# A company keeping its books in Minty: Electronic Payment is linked to 4001, Delivery to 4002 (4004
+# first for a general business), added from the sheet when the set did not add it (it starts unticked).
+
+
+@pytest.fixture
+def sheet(db, countries):
+    from minty_db.models import AccountTemplate
+
+    for business, code, name, ticked, role in (
+        ("retail", "4000", "Cash Sales", True, "cash_sale"),
+        ("retail", "4001", "Credit Card Sales", True, None),
+        ("retail", "4002", "Online Sales", False, None),
+        ("general", "4000", "Cash Sales", True, "cash_sale"),
+        ("general", "4001", "Credit Card Sales", True, None),
+        ("general", "4002", "Online Sales", False, None),
+        ("general", "4004", "Delivery Sales", False, None),
+    ):
+        AccountTemplate.objects.create(business_type=business, uses_sales_cash=True, code=code, name=name,
+                                       type="sales", ticked_by_default=ticked, pettycash_role=role)
+
+
+def _codes(entity):
+    from minty_db.models import AccountInfo, EntityPettycashSettings
+
+    row = EntityPettycashSettings.objects.get(entity_id=entity.id)
+    code = lambda account_id: AccountInfo.objects.get(id=account_id).code if account_id else None  # noqa: E731
+    return code(row.electronic_sale_account_id), code(row.delivery_sale_account_id)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("business, delivery_code", [("retail", "4002"), ("general", "4004")])
+def test_a_minty_company_links_each_ticked_sales_account_to_its_code(client, auth, minty, sheet, business,
+                                                                     delivery_code):
+    resp = post(client, auth, "/business", {"entity_id": str(minty.id), "business_type": business,
+                                            "uses_sales_cash": True})
+    assert resp.status_code == 200, resp.content
+    assert _ticks(client, auth, minty, True, True, True).status_code == 200
+    assert _codes(minty) == ("4001", delivery_code)
+
+
+@pytest.mark.django_db
+def test_an_unticked_sales_account_gets_no_code(client, auth, minty, sheet):
+    post(client, auth, "/business", {"entity_id": str(minty.id), "business_type": "retail", "uses_sales_cash": True})
+    assert _ticks(client, auth, minty, True, True, False).status_code == 200
+    assert _codes(minty) == ("4001", None)

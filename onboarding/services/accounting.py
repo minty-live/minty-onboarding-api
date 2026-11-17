@@ -357,6 +357,7 @@ def set_business(user_id, entity_id, business_type, uses_sales_cash) -> tuple[di
         added = _add_shared_rows(user_id, entity) if entity.setup_mode == "minty" else 0
         if entity.setup_mode == "minty":
             added += _sales_from_set(user_id, entity)
+            _link_sale_codes(user_id, entity)
     logger.info(
         "accounting: entity %s answered business=%s cash=%s (%s system accounts added)",
         entity_id,
@@ -368,6 +369,45 @@ def set_business(user_id, entity_id, business_type, uses_sales_cash) -> tuple[di
 
 
 NO_SALES_ACCOUNT = "No sales account is ticked yet. Tick at least one to continue."
+
+#: Each sales account's code on the Minty path (owner, 2026-11-17: "each sales should be tied"), from
+#: the accounting team's sheet: Electronic Payment is 4001 Credit Card Sales; Delivery is 4002 Online
+#: Sales, or 4004 Delivery Sales first for a general business. A sheet with neither (a service
+#: business has no delivery account) links none: Settings' Account mapping picks one.
+SALE_CODES = {
+    "electronic": ("electronic_sale_account_id", {"": ("4001",)}),
+    "delivery": ("delivery_sale_account_id", {"": ("4002",), "general": ("4004", "4002")}),
+}
+
+
+def _link_sale_codes(user_id, entity: Entity) -> None:
+    """Link each ticked sales account with no code yet to its code - the company's account with that
+    code, else the sheet's row added (it starts unticked, so the set did not add it). A chosen code is
+    never replaced; an unticked account keeps its code for when it is ticked again. Minty path only:
+    a Xero company picks its codes from Xero in Settings."""
+    if entity.setup_mode != "minty":
+        return
+    ticks = sales_ticks(entity)
+    settings, _ = EntityPettycashSettings.objects.get_or_create(entity_id=entity.id)
+    changed = []
+    for part, (column, by_business) in SALE_CODES.items():
+        if not ticks[f"sells_{part}"] or getattr(settings, column):
+            continue
+        codes = by_business.get(entity.business_type or "", by_business[""])
+        sales = _active(entity.id).filter(account_type__in=KINDS["sales"])
+        account = next((a for c in codes for a in sales.filter(code=c)[:1]), None)
+        if account is None:
+            templates = [t for t in _templates(entity) if t.type in KINDS["sales"] and not t.is_system]
+            template = next((t for c in codes for t in templates if t.code == c), None)
+            if template is not None and not _clash(entity.id, template.code, template.name):
+                account = _from_template(user_id, entity, template)
+        if account is None:
+            logger.info("accounting: entity %s has no %s sales account to link (%s)", entity.id, part, codes)
+            continue
+        setattr(settings, column, account.id)
+        changed.append(column.removesuffix("_id"))
+    if changed:
+        settings.save(update_fields=changed)
 
 
 def set_sales_accounts(user_id, entity_id, cash, electronic, delivery) -> tuple[dict, int]:
@@ -399,6 +439,7 @@ def set_sales_accounts(user_id, entity_id, cash, electronic, delivery) -> tuple[
             take_out_type(entity.id, SaleType.ELECTRONIC)
         if not delivery:
             take_out_type(entity.id, SaleType.DELIVERY)
+        _link_sale_codes(user_id, entity)
     logger.info("accounting: entity %s sales accounts cash=%s electronic=%s delivery=%s",
                 entity_id, cash, electronic, delivery)
     return answers(entity), 200
@@ -524,6 +565,8 @@ def _used(account_id) -> bool:
             | Q(discrepancy_account_id=account_id)
             | Q(director_account_id=account_id)
             | Q(discrepancy_bank_account_id=account_id)
+            | Q(electronic_sale_account_id=account_id)
+            | Q(delivery_sale_account_id=account_id)
         ).exists()
     )
 
@@ -931,6 +974,16 @@ def _sales_from_set(user_id, entity: Entity) -> int:
     if entity.uses_sales_cash is False or set_cash_sale:
         # The set chose that cash-sale account: the new answer chooses again (a person's own stays).
         _assign(entity.id, "cash_sale", None)
+    if settings is not None:
+        # Each sales account's code the set linked goes with the set too (2026-11-17); the new set's
+        # is linked after (_link_sale_codes). A code the person chose stays.
+        released = [column for column, _codes in SALE_CODES.values()
+                    if getattr(settings, column) and _active(entity.id).filter(
+                        id=getattr(settings, column), source="template").exists()]
+        for column in released:
+            setattr(settings, column, None)
+        if released:
+            settings.save(update_fields=[c.removesuffix("_id") for c in released])
     for account in _active(entity.id).filter(source="template", is_system=False,
                                              account_type__in=KINDS["sales"]):
         if not _used(account.id):
