@@ -480,6 +480,8 @@ def test_disabled_and_other_typed_sales_methods_are_excluded(client, auth, entit
         "electronic": [],
         "delivery": [],
         "groups": "electronic_delivery",
+        "sells_electronic": True,
+        "sells_delivery": True,
     }
 
 

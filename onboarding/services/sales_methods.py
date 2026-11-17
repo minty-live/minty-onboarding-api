@@ -145,6 +145,7 @@ def grouped_methods(entity_id: str) -> dict:
         "electronic": [name for typ, name in rows if typ == SaleType.ELECTRONIC],
         "delivery": [name for typ, name in rows if typ == SaleType.DELIVERY],
         "groups": groups(entity_id),
+        **ticks(entity_id),
     }
 
 
@@ -153,6 +154,40 @@ def list_grouped(user_id, entity_id: str) -> dict:
     if not has_permission_by_user_id(user_id, Permission.SALES_METHOD_VIEW, entity_id):
         raise AccessDeniedError("Access denied")
     return grouped_methods(entity_id)
+
+
+def _take_out(entity_id, links) -> None:
+    """Anything enabled that is no longer wanted: Minty's is switched off (the row is everyone's);
+    the company's own is deleted, or switched off with its row when a report used it (report_sale
+    still points at it) - owner, 2026-11-12."""
+    for link in links:
+        if not link.is_active:
+            continue
+        sale_id = link.sale_id
+        if link.sale.entity_id is None or ReportSale.objects.filter(sale_id=sale_id).exists():
+            link.is_active = False
+            link.save(update_fields=["is_active"])
+            if link.sale.entity_id is not None:
+                SaleInfo.objects.filter(id=sale_id).update(enabled=False)
+        else:
+            EntitySaleSetting.objects.filter(entity_id=entity_id, sale_id=sale_id).delete()
+            SaleInfo.objects.filter(id=sale_id).delete()
+
+
+def take_out_type(entity_id, method_type) -> None:
+    """An unticked sales account's list (Accounting Setup, owner 2026-11-17): its methods go, as if
+    step 5 had saved the list empty. NO permission check - the caller holds COA_UPDATE. The caller
+    owns the transaction."""
+    _take_out(entity_id, [link for link in _links(entity_id, enabled_only=True) if link.sale.type == method_type])
+
+
+def ticks(entity_id) -> dict:
+    """Which of step 5's lists the company takes - Accounting Setup's sales accounts."""
+    from onboarding.services.accounting import sales_ticks
+
+    entity = Entity.objects.filter(id=entity_id).first()
+    got = sales_ticks(entity) if entity is not None else {}
+    return {"sells_electronic": got.get("sells_electronic", True), "sells_delivery": got.get("sells_delivery", True)}
 
 
 def replace(user_id, entity_id: str, electronic, delivery) -> dict:
@@ -191,20 +226,7 @@ def replace(user_id, entity_id: str, electronic, delivery) -> dict:
                 link.display_order = index + 1
                 link.save()
 
-        # Anything previously enabled and now absent: Minty's is switched off (the row is
-        # everyone's); the company's own is deleted, or switched off with its row when a report
-        # used it (report_sale still points at it) - owner, 2026-11-12.
-        for sale_id, link in by_sale_id.items():
-            if sale_id in wanted or not link.is_active:
-                continue
-            if link.sale.entity_id is None or ReportSale.objects.filter(sale_id=sale_id).exists():
-                link.is_active = False
-                link.save(update_fields=["is_active"])
-                if link.sale.entity_id is not None:
-                    SaleInfo.objects.filter(id=sale_id).update(enabled=False)
-            else:
-                EntitySaleSetting.objects.filter(entity_id=entity_id, sale_id=sale_id).delete()
-                SaleInfo.objects.filter(id=sale_id).delete()
+        _take_out(entity_id, [link for sale_id, link in by_sale_id.items() if sale_id not in wanted])
 
     logger.info(
         "sales methods: entity=%s electronic=%s delivery=%s",

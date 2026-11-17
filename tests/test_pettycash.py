@@ -71,6 +71,8 @@ def test_methods_round_trip(client, auth, entity):
         "electronic": ["Visa", "Octopus"],
         "delivery": ["Keeta"],
         "groups": "electronic_delivery",  # no business type yet: both lists (2026-11-11)
+        "sells_electronic": True,  # no choice yet: the business type picks (2026-11-17)
+        "sells_delivery": True,
     }
 
 

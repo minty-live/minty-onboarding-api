@@ -29,6 +29,7 @@ import logging
 
 from django.db import transaction
 from django.db.models import Q
+from minty_db.enums import SaleType
 from minty_db.models import (
     AccountInfo,
     AccountModule,
@@ -166,12 +167,30 @@ def _settings(entity_id) -> EntityPettycashSettings | None:
     return EntityPettycashSettings.objects.filter(entity_id=entity_id).first()
 
 
+def sales_ticks(entity: Entity) -> dict:
+    """Accounting Setup's three sales accounts (owner, 2026-11-17; Figma 464:73 row 1), ticked or
+    not. Cash is the cash answer (NULL counts as yes, as "Not sure" does). Electronic Payment and
+    Delivery are the company's choice once made (minty-db v0.11); until then the business type picks:
+    Restaurant & Food and no type take both, a retail shop, a service or a general business
+    Electronic only (its one Non-cash list)."""
+    from onboarding.services.sales_methods import NON_CASH_BUSINESSES
+
+    delivery_by_type = entity.business_type not in NON_CASH_BUSINESSES
+    return {
+        "sells_cash": entity.uses_sales_cash is not False,
+        "sells_electronic": True if entity.sells_electronic is None else entity.sells_electronic,
+        "sells_delivery": delivery_by_type if entity.sells_delivery is None else entity.sells_delivery,
+        "sales_chosen": entity.sells_electronic is not None and entity.sells_delivery is not None,
+    }
+
+
 def answers(entity: Entity) -> dict:
     return {
         "mode": entity.setup_mode,
         "business_type": entity.business_type,
         "uses_sales_cash": entity.uses_sales_cash,
         "business_answered": entity.uses_sales_cash is not None,
+        **sales_ticks(entity),
     }
 
 
@@ -345,6 +364,43 @@ def set_business(user_id, entity_id, business_type, uses_sales_cash) -> tuple[di
         uses_sales_cash,
         added,
     )
+    return answers(entity), 200
+
+
+NO_SALES_ACCOUNT = "No sales account is ticked yet. Tick at least one to continue."
+
+
+def set_sales_accounts(user_id, entity_id, cash, electronic, delivery) -> tuple[dict, int]:
+    """The sales accounts screen: which of Sales - Cash, Sales - Electronic Payment and Sales -
+    Delivery the company takes. Screen only - no account is made or removed. Cash is the cash answer
+    (unticked = "We bank all sales", with the same effects as 4.2); an unticked list's methods go."""
+    from onboarding.services.sales_methods import take_out_type
+
+    if not has_permission_by_user_id(user_id, Permission.COA_UPDATE, entity_id):
+        return DENIED, 403
+    if not all(isinstance(v, bool) for v in (cash, electronic, delivery)):
+        return {"error": "Tick or untick each sales account to continue."}, 400
+    if not (cash or electronic or delivery):
+        return {"error": NO_SALES_ACCOUNT, "fields": {"sales_accounts": NO_SALES_ACCOUNT}}, 400
+    entity = _entity(entity_id)
+    if entity is None:
+        return NOT_FOUND, 404
+    with transaction.atomic():
+        cash_changed = entity.uses_sales_cash is not cash
+        entity.uses_sales_cash = cash
+        entity.sells_electronic = electronic
+        entity.sells_delivery = delivery
+        entity.save(update_fields=["uses_sales_cash", "sells_electronic", "sells_delivery"])
+        if cash_changed:
+            _cash_method(entity.id, cash)
+            if entity.setup_mode == "minty":
+                _sales_from_set(user_id, entity)
+        if not electronic:
+            take_out_type(entity.id, SaleType.ELECTRONIC)
+        if not delivery:
+            take_out_type(entity.id, SaleType.DELIVERY)
+    logger.info("accounting: entity %s sales accounts cash=%s electronic=%s delivery=%s",
+                entity_id, cash, electronic, delivery)
     return answers(entity), 200
 
 

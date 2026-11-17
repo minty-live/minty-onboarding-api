@@ -56,6 +56,7 @@ PORTED = {
     "GET /accounting",
     "POST /accounting/mode",
     "POST /accounting/business",
+    "POST /accounting/sales-accounts",
     "GET /accounting/autofill",
     "POST /accounting/autofill",
     "POST /accounting/autofill/revert",
@@ -213,8 +214,10 @@ def test_the_whole_flask_surface_is_answered():
     20/17 -> 30/17 on 2026-11-10: the ten Accounting Setup routes (step 4 with Xero optional) are
     new here; Flask never had them. 30 -> 32 the same day: the Xero path's ticks (X2, X3) and its
     Refresh from Xero.
+
+    32 -> 33 on 2026-11-17: ``POST /accounting/sales-accounts``, the sales accounts screen.
     """
-    assert len(PORTED) == 32
+    assert len(PORTED) == 33
     assert len(PROXIED) == 17
-    assert len(EXPECTED) == 49
+    assert len(EXPECTED) == 50
     assert set(_operations()) == EXPECTED

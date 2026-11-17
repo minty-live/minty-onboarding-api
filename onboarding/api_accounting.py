@@ -64,6 +64,23 @@ def post_business(request, payload: dict = Body(default={})):
     )
 
 
+@accounting_router.post("/accounting/sales-accounts")
+def post_sales_accounts(request, payload: dict = Body(default={})):
+    """The sales accounts screen - ``{entity_id, cash: bool, electronic: bool, delivery: bool}``
+    (owner, 2026-11-17): which sales methods Petty Cash Settings asks for. At least one."""
+    entity_id = _entity(request, payload)
+    return _changed(
+        entity_id,
+        lambda: accounting.set_sales_accounts(
+            request.auth_user_id,
+            entity_id,
+            payload.get("cash"),
+            payload.get("electronic"),
+            payload.get("delivery"),
+        ),
+    )
+
+
 @accounting_router.get("/accounting/autofill")
 def get_autofill(request, entity_id: str = "", kind: str = ""):
     """What Auto Fill offers for ``kind`` (``sales`` or ``expense``)."""

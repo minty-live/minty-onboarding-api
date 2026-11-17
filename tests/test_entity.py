@@ -334,7 +334,8 @@ def test_a_new_company_shows_no_sales_methods_in_state(
     entity_id = post_create(client, auth, entity_name="Empty Co", **STEP1).json()["entity_id"]
     resp = client.get(f"/api/onboarding/state?entity_id={entity_id}", **auth)
     assert resp.status_code == 200
-    assert resp.json()["sales_methods"] == {"electronic": [], "delivery": [], "groups": "electronic_delivery"}
+    assert resp.json()["sales_methods"] == {"electronic": [], "delivery": [], "groups": "electronic_delivery",
+                                             "sells_electronic": True, "sells_delivery": True}
 
 
 @pytest.mark.django_db
