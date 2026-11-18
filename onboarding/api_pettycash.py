@@ -140,6 +140,19 @@ def post_contacts_create(request, payload: dict = Body(default={})):
     return _answer(xero_lists.create_contact(request.auth_user_id, _entity_from(payload), name))
 
 
+@pettycash_router.get("/petty-cash-codes")
+def get_petty_cash_codes(request, entity_id: str = ""):
+    """Petty Cash Settings' Account Code (Minty on its own, 2026-11-18): step 4's expense accounts and
+    which appear when someone adds a petty cash expense."""
+    return _answer(xero_lists.petty_code_options(request.auth_user_id, require_entity_id(entity_id)))
+
+
+@pettycash_router.post("/petty-cash-codes")
+def post_petty_cash_codes(request, payload: dict = Body(default={})):
+    return _answer(xero_lists.save_petty_codes(request.auth_user_id, _entity_from(payload),
+                                               payload.get("selected_codes")))
+
+
 @pettycash_router.get("/bill-codes")
 def get_bill_codes(request, entity_id: str = ""):
     """The bill codes a payment request may use and which are ticked."""

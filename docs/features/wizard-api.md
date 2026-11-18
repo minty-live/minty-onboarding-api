@@ -140,6 +140,7 @@ account shares it. Blank means the payer's own address is used instead.
     missing. A company banking all its sales (step 4) keeps no cash-sale contact: it is cleared
     whatever is posted (2026-11-11). `POST /contacts/create` makes a supplier in Xero and stores it
     (`category = expense_contact`); Xero refusing is 502.
+  - **`GET`/`POST /petty-cash-codes` (owner, 2026-11-18):** Petty Cash Settings' Account Code for a company keeping its books in Minty (a Xero company is 409: it chose them in X3). Step 4's expense accounts with a code (`_payment_list`, as `/bill-codes`) as `{codes: [{code, name}], selected_codes}`, ticked from Petty Cash's `account_module` rows, else the old `entity_account_xero.is_active` (as the sheet set them). The save ticks exactly `selected_codes` in both tables (minty-petty-cash-api reads `entity_account_xero`): none is 400 "Pick at least one account code.", a code not listed 400, no expense account 409. COA_VIEW / COA_UPDATE. Tests: `test_petty_cash_codes.py`.
   - **`/bill-codes` follows Accounting Setup (owner, 2026-11-11):** the list is step 4's expense
     accounts (`accounting.payment_accounts`) - a Minty company's own (4.4), a Xero company's ticked
     in X3 (or by the old wizard) - with no Xero call. Each is ticked by its old

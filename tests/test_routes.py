@@ -46,6 +46,8 @@ PORTED = {
     "POST /contacts",
     "POST /contacts/create",
     "GET /bill-codes",
+    "GET /petty-cash-codes",
+    "POST /petty-cash-codes",
     "POST /bill-codes",
     # Group E -- listing is local; POST /invite is NOT (see PROXIED).
     "GET /invite",
@@ -215,9 +217,10 @@ def test_the_whole_flask_surface_is_answered():
     new here; Flask never had them. 30 -> 32 the same day: the Xero path's ticks (X2, X3) and its
     Refresh from Xero.
 
-    32 -> 33 on 2026-11-17: ``POST /accounting/sales-accounts``, the sales accounts screen.
+    32 -> 33 on 2026-11-17: ``POST /accounting/sales-accounts``, the sales accounts screen. 33 -> 35
+    on 2026-11-18: ``GET``/``POST /petty-cash-codes``, Petty Cash Settings' Account Code.
     """
-    assert len(PORTED) == 33
+    assert len(PORTED) == 35
     assert len(PROXIED) == 17
-    assert len(EXPECTED) == 50
+    assert len(EXPECTED) == 52
     assert set(_operations()) == EXPECTED

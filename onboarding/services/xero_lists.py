@@ -395,6 +395,79 @@ def bill_code_options(user_id, entity_id) -> tuple[dict, int]:
             "default_all": bool(codes) and not decided, "default_code": default}, 200
 
 
+CODES_CHOSEN_IN_X3 = "Your Xero company chose its Petty Cash codes in Accounting Setup. Change them there."
+
+
+def _petty_gate(entity: Entity):
+    """Minty on its own only: a Xero company's X3 ticks are Petty Cash's list (and Payment Request's
+    choices), so a second list here would change both."""
+    from onboarding.services.accounting import minty_on_its_own
+
+    return None if minty_on_its_own(entity) else ({"error": CODES_CHOSEN_IN_X3}, 409)
+
+
+def petty_code_options(user_id, entity_id) -> tuple[dict, int]:
+    """Petty Cash Settings' Account Code (owner, 2026-11-18): step 4's expense accounts and which
+    appear when someone adds a petty cash expense - Petty Cash's ``account_module`` rows, else the
+    old ``entity_account_xero`` ticks (as the sheet set them)."""
+    if not has_permission_by_user_id(user_id, Permission.COA_VIEW, entity_id):
+        return DENIED, 403
+    entity = Entity.objects.filter(id=entity_id).first()
+    if entity is None:
+        return NOT_FOUND, 404
+    refused = _petty_gate(entity)
+    if refused:
+        return refused
+    listed = _payment_list(entity)
+    ids = [a.id for a in listed.values()]
+    modules = dict(AccountModule.objects.filter(entity_id=entity_id, module_code="PETTY_CASH",
+                                                account_id__in=ids).values_list("account_id", "is_active"))
+    old = dict(EntityAccountXero.objects.filter(account_id__in=ids).values_list("account_id", "is_active"))
+    codes, selected = [], []
+    for code, account in listed.items():
+        codes.append({"code": code, "name": account.name or ""})
+        if modules.get(account.id, old.get(account.id, False)):
+            selected.append(code)
+    return {"codes": codes, "selected_codes": selected}, 200
+
+
+def save_petty_codes(user_id, entity_id, selected_codes) -> tuple[dict, int]:
+    """Tick exactly ``selected_codes`` for Petty Cash (at least one), in both tables."""
+    if not has_permission_by_user_id(user_id, Permission.COA_UPDATE, entity_id):
+        return DENIED, 403
+    if not isinstance(selected_codes, list):
+        return {"error": "selected_codes must be an array"}, 400
+    entity = Entity.objects.filter(id=entity_id).first()
+    if entity is None:
+        return NOT_FOUND, 404
+    refused = _petty_gate(entity)
+    if refused:
+        return refused
+    listed = _payment_list(entity)
+    if not listed:
+        return {"error": NO_EXPENSE_ACCOUNTS}, 409
+    wanted = {str(c).strip() for c in selected_codes}
+    if not wanted <= set(listed):
+        return {"error": "Pick only the account codes listed. Reload the page and try again."}, 400
+    selected = sorted(wanted, key=_code_key)
+    if not selected:
+        return {"error": "Pick at least one account code."}, 400
+    with transaction.atomic():
+        for code, account in listed.items():
+            on = code in selected
+            AccountModule.objects.update_or_create(
+                account_id=account.id, module_code="PETTY_CASH",
+                defaults={"is_active": on}, create_defaults={"is_active": on, "entity_id": entity.id},
+            )
+            EntityAccountXero.objects.update_or_create(
+                account_id=account.id,
+                defaults={"is_active": on}, create_defaults={"is_active": on, "name": account.name,
+                                                             "type": account.type},
+            )
+    logger.info("save_petty_codes: entity=%s selected=%s of %s", entity_id, len(selected), len(listed))
+    return {"ok": True, "selected_codes": selected}, 200
+
+
 def save_bill_codes(user_id, entity_id, selected_codes, default_code=None) -> tuple[dict, int]:
     if not has_permission_by_user_id(user_id, Permission.COA_UPDATE, entity_id):
         return DENIED, 403
