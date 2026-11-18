@@ -46,7 +46,10 @@ def minty(client, auth, entity):
 @pytest.mark.django_db
 @pytest.mark.parametrize("business, cash, expected", [
     ("fnb", True, (True, True, True)),
-    (None, True, (True, True, True)),
+    # "None of these" (owner, 2026-11-18): only Sales - Cash until chosen
+    (None, True, (True, False, False)),
+    # a company from before the questions (no type, no cash answer) keeps both lists
+    (None, None, (True, True, True)),
     ("retail", True, (True, True, False)),
     ("service", False, (False, True, False)),
     ("general", True, (True, True, False)),

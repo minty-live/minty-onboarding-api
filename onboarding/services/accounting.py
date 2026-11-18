@@ -175,10 +175,13 @@ def sales_ticks(entity: Entity) -> dict:
     Electronic only (its one Non-cash list)."""
     from onboarding.services.sales_methods import NON_CASH_BUSINESSES
 
-    delivery_by_type = entity.business_type not in NON_CASH_BUSINESSES
+    # "None of these" (no type, the question answered): only Sales - Cash until chosen (owner,
+    # 2026-11-18). A company from before the questions (no answer either) keeps both lists.
+    none_of_these = entity.business_type is None and entity.uses_sales_cash is not None
+    delivery_by_type = entity.business_type not in NON_CASH_BUSINESSES and not none_of_these
     return {
         "sells_cash": entity.uses_sales_cash is not False,
-        "sells_electronic": True if entity.sells_electronic is None else entity.sells_electronic,
+        "sells_electronic": (not none_of_these) if entity.sells_electronic is None else entity.sells_electronic,
         "sells_delivery": delivery_by_type if entity.sells_delivery is None else entity.sells_delivery,
         "sales_chosen": entity.sells_electronic is not None and entity.sells_delivery is not None,
     }
