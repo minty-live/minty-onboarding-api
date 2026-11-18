@@ -380,7 +380,7 @@ def bill_code_options(user_id, entity_id) -> tuple[dict, int]:
     old = {}
     for row in EntityBillAccountXero.objects.filter(entity_id=entity_id, is_deleted=False):
         old.setdefault((row.account_code or "").strip(), row)
-    codes, selected, decided, default = [], [], False, ""
+    codes, selected, decided = [], [], False
     for code, account in listed.items():
         choice = old.get(code) or modules.get(account.id)
         codes.append({"code": code, "name": account.name or ""})
@@ -389,10 +389,8 @@ def bill_code_options(user_id, entity_id) -> tuple[dict, int]:
         decided = True
         if choice.is_active:
             selected.append(code)
-        if choice.is_default:
-            default = code
     return {"connected": xero_connected(entity), "bill_codes": codes, "selected_codes": selected,
-            "default_all": bool(codes) and not decided, "default_code": default}, 200
+            "default_all": bool(codes) and not decided}, 200
 
 
 CODES_CHOSEN_IN_X3 = "Your Xero company chose its Petty Cash codes in Accounting Setup. Change them there."
@@ -468,7 +466,9 @@ def save_petty_codes(user_id, entity_id, selected_codes) -> tuple[dict, int]:
     return {"ok": True, "selected_codes": selected}, 200
 
 
-def save_bill_codes(user_id, entity_id, selected_codes, default_code=None) -> tuple[dict, int]:
+def save_bill_codes(user_id, entity_id, selected_codes) -> tuple[dict, int]:
+    """Ticks exactly ``selected_codes``. No default account code (owner, 2026-11-18): ``is_default``
+    is neither read nor written."""
     if not has_permission_by_user_id(user_id, Permission.COA_UPDATE, entity_id):
         return DENIED, 403
     if not isinstance(selected_codes, list):
@@ -485,18 +485,9 @@ def save_bill_codes(user_id, entity_id, selected_codes, default_code=None) -> tu
     selected = sorted({str(c).strip() for c in selected_codes} & set(listed), key=_code_key)
     if not selected:
         return {"error": "Pick at least one account code."}, 400
-    default = str(default_code).strip() if default_code is not None else None
-    if default and default not in selected:
-        return {"error": "The default account code must be one of the ticked codes."}, 400
     with transaction.atomic():
-        if default is not None:  # one default per module: clear before setting
-            AccountModule.objects.filter(
-                entity_id=entity_id, module_code="PAYMENT_REQUEST", is_default=True
-            ).update(is_default=False)
         for code, account in listed.items():
             values = {"is_active": code in selected}
-            if default is not None:
-                values["is_default"] = code == default
             AccountModule.objects.update_or_create(
                 account_id=account.id, module_code="PAYMENT_REQUEST",
                 defaults=values, create_defaults={**values, "entity_id": entity.id},
@@ -506,20 +497,13 @@ def save_bill_codes(user_id, entity_id, selected_codes, default_code=None) -> tu
         for row in rows:
             code = (row.account_code or "").strip()
             row.is_active = code in selected
-            fields = ["is_active"]
-            if code not in listed:
-                row.is_default = False
-                fields.append("is_default")
-            elif default is not None:
-                row.is_default = code == default
-                fields.append("is_default")
-            row.save(update_fields=fields)
+            row.save(update_fields=["is_active"])
         for code, account in listed.items():
             if code not in have:
                 EntityBillAccountXero.objects.create(
                     entity_id=entity_id, account_code=code, account_name=account.name or "",
                     account_type=account.type or "", xero_account_id=account.xero_account_id or "",
-                    is_active=code in selected, is_default=code == default,
+                    is_active=code in selected,
                 )
     logger.info("save_bill_codes: entity=%s selected=%s of %s", entity_id, len(selected), len(listed))
-    return {"ok": True, "selected_codes": selected, "default_code": default}, 200
+    return {"ok": True, "selected_codes": selected}, 200

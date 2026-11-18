@@ -238,14 +238,15 @@ def test_payment_request_needs_xero_and_an_active_bill_code(
 
 
 @requires_postgres
-def test_a_default_bill_code_must_be_active(client, auth, entity, enable_module, monkeypatch):
+def test_an_unticked_default_bill_code_no_longer_holds_finalize(client, auth, entity, enable_module, monkeypatch):
+    """No default account code (owner, 2026-11-18): an old is_default row is ignored."""
     enable_module(entity, "PAYMENT_REQUEST")
     _xero(entity)
     _bill_code(entity, "400", active=True)
     _bill_code(entity, "410", active=False, default=True)
     _trials_ok(monkeypatch)
 
-    assert _finalize(client, auth, entity.id).status_code == 409
+    assert _finalize(client, auth, entity.id).status_code == 200
 
 
 @requires_postgres

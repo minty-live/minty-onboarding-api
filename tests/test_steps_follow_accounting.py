@@ -41,11 +41,8 @@ def _bills(client, auth, entity):
     return client.get(BILLS, {"entity_id": str(entity.id)}, **auth)
 
 
-def _save_bills(client, auth, entity, codes, default=None):
-    body = {"entity_id": str(entity.id), "selected_codes": codes}
-    if default is not None:
-        body["default_code"] = default
-    return post(client, auth, BILLS, body)
+def _save_bills(client, auth, entity, codes):
+    return post(client, auth, BILLS, {"entity_id": str(entity.id), "selected_codes": codes})
 
 
 @pytest.fixture
@@ -108,19 +105,17 @@ def test_a_minty_save_writes_payment_requests_module_rows_and_the_old_rows(clien
     stock = _own(minty, "310", "Stock purchases", "direct_costs")
     rent = _own(minty, "420", "Rent", modules=(True, False))
 
-    resp = _save_bills(client, auth, minty, ["420"], default="420")
+    resp = _save_bills(client, auth, minty, ["420"])
     assert resp.status_code == 200, resp.content
-    assert resp.json() == {"ok": True, "selected_codes": ["420"], "default_code": "420"}
-    assert (_pr_module(rent).is_active, _pr_module(rent).is_default) == (True, True)
+    assert resp.json() == {"ok": True, "selected_codes": ["420"]}
+    assert (_pr_module(rent).is_active, _pr_module(rent).is_default) == (True, False)
     assert (_pr_module(stock).is_active, _pr_module(stock).is_default) == (False, False)
     old = {r.account_code: (r.is_active, r.is_default) for r in EntityBillAccountXero.objects.filter(entity_id=minty.id)}
-    assert old == {"310": (False, False), "420": (True, True)}
+    assert old == {"310": (False, False), "420": (True, False)}
 
-    # The default moves: one default per module, in both tables.
-    assert _save_bills(client, auth, minty, ["310", "420"], default="310").status_code == 200
-    assert _pr_module(stock).is_default and not _pr_module(rent).is_default
+    assert _save_bills(client, auth, minty, ["310", "420"]).status_code == 200
     body = _bills(client, auth, minty).json()
-    assert (body["selected_codes"], body["default_code"]) == (["310", "420"], "310")
+    assert body["selected_codes"] == ["310", "420"] and "default_code" not in body
 
 
 @pytest.mark.django_db
@@ -137,8 +132,6 @@ def test_the_refusals_keep_their_sentences(client, auth, minty):
     _own(minty, "420", "Rent")
     assert _save_bills(client, auth, minty, []).json() == {"error": "Pick at least one account code."}
     assert _save_bills(client, auth, minty, ["999"]).json() == {"error": "Pick at least one account code."}
-    assert _save_bills(client, auth, minty, ["420"], default="999").json() == {
-        "error": "The default account code must be one of the ticked codes."}
 
 
 @pytest.mark.django_db
@@ -164,12 +157,12 @@ def test_a_xero_save_makes_module_rows_and_bill_rows_and_turns_off_the_rest(clie
     EntityBillAccountXero.objects.create(entity_id=entity.id, account_code="404", account_name="Bank Fees",
                                          account_type="EXPENSE", xero_account_id="x-404", is_active=True)
 
-    resp = _save_bills(client, auth, entity, ["469"], default="469")
+    resp = _save_bills(client, auth, entity, ["469"])
     assert resp.status_code == 200, resp.content
-    assert (_pr_module(rows["rent"]).is_active, _pr_module(rows["rent"]).is_default) == (True, True)
+    assert (_pr_module(rows["rent"]).is_active, _pr_module(rows["rent"]).is_default) == (True, False)
     old = {r.account_code: (r.xero_account_id, r.is_active, r.is_default)
            for r in EntityBillAccountXero.objects.filter(entity_id=entity.id)}
-    assert old == {"469": ("x-469", True, True), "404": ("x-404", False, False)}
+    assert old == {"469": ("x-469", True, False), "404": ("x-404", False, False)}
 
 
 @pytest.mark.django_db

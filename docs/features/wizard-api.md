@@ -147,11 +147,11 @@ account shares it. Blank means the payer's own address is used instead.
     `entity_bill_account_xero` row when one exists (what minty-payment-request-api reads), else by
     Payment Request's `account_module` row; `default_all` is true only when none has either.
     `POST` ticks exactly the posted codes among them (at least one: "Pick at least one account
-    code.", a default among them: "The default account code must be one of the ticked codes.") and
-    writes **both** tables - `account_module` PAYMENT_REQUEST (`is_active`, one `is_default`, made
+    code.") and writes **both** tables - `account_module` PAYMENT_REQUEST (`is_active`, made
     for a Xero account that has none) and the old rows (made when missing, and turned off for any
     account step 4 doesn't list). A company with no listed account is 409 "Add an expense account
-    in Accounting Setup first."
+    in Accounting Setup first." **No default account code (owner, 2026-11-18):** neither route reads
+    or writes `is_default`; a posted `default_code` is ignored.
 
 ## Accounting Setup - step 4 with Xero optional (`api_accounting.py`, `services/accounting.py`)
 
@@ -249,9 +249,8 @@ own (Accounting Setup, above) needs only its business answers; otherwise Petty C
 plus daily closing's accounts (four for a company banking all its sales, else five; the
 discrepancy bank follows petty cash) -> step 6, Account Code (2026-11-11: step 4 no longer maps
 them), and the director, discrepancy and (with
-cash sales only) cash-sale contacts -> step 7, read from `entity_pettycash_settings` (2026-11-11); Payment Request needs Xero plus at least one ticked bill account code, and
-a default code (if set) that is ticked - that one read from `entity_bill_account_xero`
-(`EntityBillAccountXero`), since the view has no column for it. Anything missing is a 409 `{"error", "missing": [{"step",
+cash sales only) cash-sale contacts -> step 7, read from `entity_pettycash_settings` (2026-11-11); Payment Request needs Xero plus at least one ticked bill account code (no default code since
+2026-11-18). Anything missing is a 409 `{"error", "missing": [{"step",
 "message"}]}` and the company stays `onboarding` - All Set lists each with a way back to its
 step. Then a company still `onboarding` flips to `connected` (a Xero
 org is linked) or `disconnected`; then **every** finalize calls the subscription API's

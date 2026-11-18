@@ -733,7 +733,7 @@ def test_bill_codes_come_from_a_minty_companys_own_expense_accounts(client, auth
     assert resp.json()["bill_codes"] == [{"code": "405", "name": "Rent"}]
     saved = client.post(
         "/api/onboarding/bill-codes",
-        {"entity_id": str(minty.id), "selected_codes": ["405"], "default_code": "405"},
+        {"entity_id": str(minty.id), "selected_codes": ["405"]},
         content_type="application/json",
         **auth,
     )

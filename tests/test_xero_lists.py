@@ -330,7 +330,7 @@ def ticked(entity, code, name):
 
 
 @pytest.mark.django_db
-def test_the_bill_codes_are_read_sorted_with_the_default(client, auth, connected, xero):
+def test_the_bill_codes_are_read_sorted_and_name_no_default(client, auth, connected, xero):
     ticked(connected, "404", "Bank Fees")
     ticked(connected, "40", "Odd")
     bill(connected, "404", "Bank Fees", active=True, default=True)
@@ -338,7 +338,7 @@ def test_the_bill_codes_are_read_sorted_with_the_default(client, auth, connected
     resp = client.get(BILLS, {"entity_id": connected.id}, **auth)
     assert resp.json() == {"connected": True, "bill_codes": [{"code": "40", "name": "Odd"},
                                                              {"code": "404", "name": "Bank Fees"}],
-                           "selected_codes": ["404"], "default_all": False, "default_code": "404"}
+                           "selected_codes": ["404"], "default_all": False}
     assert xero.calls == []
 
 
@@ -352,22 +352,20 @@ def test_the_bill_codes_are_step_4s_ticks_with_no_sync(client, auth, connected, 
 
 
 @pytest.mark.django_db
-def test_the_bill_codes_save_keeps_one_and_a_ticked_default(client, auth, connected, xero):
+def test_the_bill_codes_save_keeps_one_and_leaves_the_default_alone(client, auth, connected, xero):
     ticked(connected, "400", "Advertising")
     ticked(connected, "404", "Bank Fees")
     bill(connected, "400", "Advertising", active=True)
     bill(connected, "404", "Bank Fees", default=True)
 
+    # No default account code (owner, 2026-11-18): a posted one is ignored and is_default untouched.
     done = post(client, auth, BILLS, {"entity_id": connected.id, "selected_codes": ["404", "400"], "default_code": "400"})
-    assert done.json() == {"ok": True, "selected_codes": ["400", "404"], "default_code": "400"}
+    assert done.json() == {"ok": True, "selected_codes": ["400", "404"]}
     rows = {r.account_code: (r.is_active, r.is_default) for r in EntityBillAccountXero.objects.filter(entity_id=connected.id)}
-    assert rows == {"400": (True, True), "404": (True, False)}
+    assert rows == {"400": (True, False), "404": (True, True)}
 
     assert post(client, auth, BILLS, {"entity_id": connected.id, "selected_codes": []}).json() == {
         "error": "Pick at least one account code."}
-    assert post(client, auth, BILLS, {"entity_id": connected.id, "selected_codes": ["400"],
-                                      "default_code": "404"}).json() == {
-        "error": "The default account code must be one of the ticked codes."}
 
 
 @pytest.mark.django_db

@@ -162,4 +162,4 @@ def get_bill_codes(request, entity_id: str = ""):
 @pettycash_router.post("/bill-codes")
 def post_bill_codes(request, payload: dict = Body(default={})):
     return _answer(xero_lists.save_bill_codes(request.auth_user_id, _entity_from(payload),
-                                              payload.get("selected_codes"), payload.get("default_code")))
+                                              payload.get("selected_codes")))

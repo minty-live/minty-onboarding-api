@@ -27,7 +27,7 @@ privilege of its own -- there is no service credential here to scope wrongly.
 import logging
 
 from minty_db.enums import EntityStatus
-from minty_db.models import EntityBillAccountXero, EntityFunctionMap, EntityPettycashSettings
+from minty_db.models import EntityFunctionMap, EntityPettycashSettings
 from ninja import Body, Router, Status
 
 from core import minty_client, subscription_client
@@ -170,15 +170,6 @@ def setup_gaps(entity) -> list[dict]:
             )
     if bills and setup.bill_accounts_set < 1:
         gaps.append({"step": 8, "message": "Tick at least one payment request account code."})
-    if (
-        bills
-        and EntityBillAccountXero.objects.filter(
-            entity_id=entity.id, is_default=True, is_active=False, is_deleted=False
-        ).exists()
-    ):
-        gaps.append(
-            {"step": 8, "message": "Make the default account code one of the ticked codes."}
-        )
     return gaps
 
 
