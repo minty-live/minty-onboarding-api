@@ -17,6 +17,7 @@ the frontend cut over one endpoint group at a time with no frontend change.
 
 import logging
 
+from minty_shared import tokens
 from ninja.errors import AuthenticationError
 from ninja.errors import ValidationError as SchemaValidationError
 
@@ -141,8 +142,14 @@ def register_exception_handlers(api):
         log in again.
 
         Flask answers ``{"error": "Unauthorized"}`` on exactly this path. Matched.
+
+        Plus ``"reason": "session_expired"`` when the sign-in behind the token has ended
+        (core/auth.py, owner 2026-11-19): the wizard then says the session has expired instead
+        of relaunching quietly.
         """
-        return api.create_response(request, {"error": "Unauthorized"}, status=401)
+        return api.create_response(
+            request, {"error": "Unauthorized", **tokens.unauthorized_reason(request)}, status=401
+        )
 
     @api.exception_handler(SchemaValidationError)
     def on_schema_validation(request, exc):

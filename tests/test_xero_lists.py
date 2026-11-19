@@ -60,6 +60,7 @@ class Xero:
         self.contacts = [{"ContactID": "c-2", "Name": "Zeta Supplies"}, {"ContactID": "c-1", "Name": "Alpha"},
                          {"ContactID": "c-1", "Name": "Alpha"}]
         self.down = False
+        self.refuse = False  # Xero says no to a new contact (a 400)
         self.calls: list[tuple] = []
         self.on_sync = None  # what accounts-api's sync stores, when asked
 
@@ -79,7 +80,7 @@ class Xero:
                 self.on_sync()
             return _Resp(200, {"accounts": None, "contacts": None})
         self.calls.append(("POST", "Contacts", json))
-        if self.down:
+        if self.down or self.refuse:
             return _Resp(400, {})
         return _Resp(200, {"Contacts": [{"ContactID": "c-new", "Name": json["Contacts"][0]["Name"]}]})
 
@@ -293,7 +294,9 @@ def test_a_new_contact_is_made_in_xero_and_stored(client, auth, connected, xero)
     resp = post(client, auth, CREATE, {"entity_id": connected.id, "name": "  New Supplier  "})
 
     assert (resp.status_code, resp.json()) == (201, {"id": "c-new", "label": "New Supplier"})
-    assert xero.calls == [("POST", "Contacts", {"Contacts": [{"Name": "New Supplier", "IsCustomer": False,
+    # Xero searched for the name first (owner's decisions doc C5, 2026-11-19), then made as a supplier
+    assert xero.calls == [("GET", "Contacts", {"searchTerm": "New Supplier", "page": 1}),
+                          ("POST", "Contacts", {"Contacts": [{"Name": "New Supplier", "IsCustomer": False,
                                                               "IsSupplier": True}]})]
     row = XeroContactSync.objects.get(entity_id=connected.id, xero_contact_id="c-new")
     assert (row.name, row.category, row.xero_org_id) == ("New Supplier", "expense_contact", ORG)
@@ -303,7 +306,7 @@ def test_a_new_contact_is_made_in_xero_and_stored(client, auth, connected, xero)
 def test_a_new_contact_refused_or_unnamed(client, auth, connected, xero):
     assert post(client, auth, CREATE, {"entity_id": connected.id, "name": " "}).json() == {
         "error": "Contact name is required."}
-    xero.down = True
+    xero.refuse = True
     resp = post(client, auth, CREATE, {"entity_id": connected.id, "contact_name": "X"})
     # Xero said no (a 400): its refusal, said as a sentence; nothing stored
     assert (resp.status_code, resp.json()) == (422, {"error": "Xero didn't accept that. Check it in Xero and try again."})

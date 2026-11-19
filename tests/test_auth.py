@@ -70,6 +70,48 @@ def test_expired_token_is_refused(client, user, plans, modules, policy):
 
 
 @pytest.mark.django_db
+def test_a_token_whose_sign_in_has_ended_is_refused(client, user, plans, modules, policy, hub_sessions):
+    """Signed out of Minty, or 60 minutes without activity (Phase 9): the wizard ends with it."""
+    hub_sessions.end("gone")
+    resp = client.get(PLANS, HTTP_AUTHORIZATION=f"Bearer {make_token(user.id, sid='gone')}")
+    # The reason (owner, 2026-11-19): the wizard says "Your session has expired", never renews.
+    assert resp.status_code == 401
+    assert resp.json() == {"error": "Unauthorized", "reason": "session_expired"}
+
+
+@pytest.mark.django_db
+def test_an_expired_token_whose_sign_in_has_ended_says_so(client, user, plans, modules, policy, hub_sessions):
+    """The usual case after 60 idle minutes: the token ran out AND the sign-in ended."""
+    hub_sessions.end("gone")
+    resp = client.get(PLANS, HTTP_AUTHORIZATION=f"Bearer {make_token(user.id, minutes=-60, sid='gone')}")
+    assert resp.status_code == 401
+    assert resp.json() == {"error": "Unauthorized", "reason": "session_expired"}
+
+
+@pytest.mark.django_db
+def test_an_expired_token_whose_sign_in_lives_is_renewed_quietly(client, user, plans, modules, policy,
+                                                                 hub_sessions):
+    resp = client.get(PLANS, HTTP_AUTHORIZATION=f"Bearer {make_token(user.id, minutes=-60, sid='s1')}")
+    assert resp.status_code == 401 and resp.json() == {"error": "Unauthorized"}
+    assert hub_sessions.calls == ["s1"]
+
+
+@pytest.mark.django_db
+def test_a_live_sign_in_is_kept_alive_at_most_once_a_minute(client, user, plans, modules, policy, hub_sessions):
+    for _ in range(2):
+        resp = client.get(PLANS, HTTP_AUTHORIZATION=f"Bearer {make_token(user.id, sid='s1')}")
+        assert resp.status_code == 200
+    assert hub_sessions.calls == ["s1"]
+
+
+@pytest.mark.django_db
+def test_a_token_from_before_the_sid_is_accepted_until_it_expires(client, user, plans, modules, policy,
+                                                                  hub_sessions):
+    assert client.get(PLANS, HTTP_AUTHORIZATION=f"Bearer {make_token(user.id)}").status_code == 200
+    assert hub_sessions.calls == []
+
+
+@pytest.mark.django_db
 def test_unknown_user_is_refused(client, plans, modules, policy):
     """A well-formed, correctly signed token naming a user who does not exist."""
     token = make_token(uuid.uuid4())

@@ -118,7 +118,7 @@ def _used_ids(entity_id) -> set:
 
 
 def _held(entity_id, ids) -> set:
-    """Of ``ids``, the accounts something uses (``_used``'s rule, three queries for the lot)."""
+    """Of ``ids``, the accounts something uses (``_used``'s rule, a few queries for the lot)."""
     ids = list(ids)
     if not ids:
         return set()
@@ -126,6 +126,17 @@ def _held(entity_id, ids) -> set:
         ReportExpense.objects.filter(account_id__in=ids).values_list("account_id", flat=True)
     )
     held |= set(BillLine.objects.filter(account_id__in=ids).values_list("account_id", flat=True))
+    codes = [(i, c) for i, c in AccountInfo.objects.filter(id__in=ids).values_list("id", "xero_code") if c]
+    if codes:
+        lined = set(
+            BillLine.objects.filter(
+                bill__entity_id=entity_id, account_code__in=[c for _i, c in codes]
+            ).values_list("account_code", flat=True)
+        )
+        held |= {i for i, c in codes if c in lined}
+    held |= set(
+        AccountInfo.objects.filter(merged_into_id__in=ids).values_list("merged_into_id", flat=True)
+    )
     settings = (
         EntityPettycashSettings.objects.filter(entity_id=entity_id)
         .values(*SETTINGS_COLUMNS)
@@ -557,10 +568,25 @@ def apply_autofill(user_id, entity_id, kind, template_ids) -> tuple[dict, int]:
 SETTINGS_COLUMNS = [c for c, _t in SLOTS.values()] + ["discrepancy_bank_account_id"]
 
 
-def _used(account_id) -> bool:
+#: A used account is never deleted (owner, 2026-11-18): it stays, and the delete is refused.
+USED_ACCOUNT = "{name} is already used in your records or Petty Cash Settings, so it can't be deleted."
+
+
+def _used(account: AccountInfo) -> bool:
+    """Something uses the account - accounts-api's rule (``xero/services/usage.py``): an expense
+    line, a bill line (by id, or by code on a line saved before ``bill_line.account_id``), an
+    account combined into it, or one of daily closing's accounts."""
+    account_id = account.id
     return (
         ReportExpense.objects.filter(account_id=account_id).exists()
         or BillLine.objects.filter(account_id=account_id).exists()
+        or (
+            bool(account.xero_code)
+            and BillLine.objects.filter(
+                bill__entity_id=account.entity_id, account_code=account.xero_code
+            ).exists()
+        )
+        or AccountInfo.objects.filter(merged_into_id=account_id).exists()
         or EntityPettycashSettings.objects.filter(
             Q(**{SETTINGS_COLUMNS[0]: account_id})
             | Q(bank_account_id=account_id)
@@ -587,7 +613,7 @@ def revert(user_id, entity_id, kind) -> tuple[dict, int]:
         for account in _active(entity_id).filter(
             source="template", is_system=False, account_type__in=KINDS[kind]
         ):
-            if _used(account.id):
+            if _used(account):
                 kept.append(_row(account))
             else:
                 _remove(account)
@@ -813,7 +839,7 @@ def _apply_update(entity: Entity, account: AccountInfo, clean: dict) -> None:
 
 
 def delete_account(user_id, entity_id, account_id) -> tuple[dict, int]:
-    """Untick an account: deleted when nothing uses it, else archived (kept for its records)."""
+    """Untick an account: deleted when nothing uses it, else refused (``USED_ACCOUNT``)."""
     if not has_permission_by_user_id(user_id, Permission.COA_DELETE, entity_id):
         return DENIED, 403
     if _entity(entity_id) is None:
@@ -829,26 +855,11 @@ def delete_account(user_id, entity_id, account_id) -> tuple[dict, int]:
         return {
             "error": "This account comes from Xero. Archive it in Xero, and Minty follows."
         }, 409
+    if _used(account):
+        return {"error": USED_ACCOUNT.format(name=account.name)}, 409
     with transaction.atomic():
-        archived = _retire(account)
-    return {"archived": archived}, 200
-
-
-def _retire(account: AccountInfo) -> bool:
-    """Take an account away: archived when something uses it (kept for its records, off every
-    list), else deleted with its old-reader rows. True when archived. The wizard's delete and
-    Settings' (``chart``) both run this."""
-    if not _used(account.id):
         _remove(account)
-        return False
-    account.record_status, account.status = "archived", "ARCHIVED"
-    account.save(update_fields=["record_status", "status"])
-    EntityAccountXero.objects.filter(account_id=account.id).update(is_active=False)
-    EntityBillAccountXero.objects.filter(
-        entity_id=account.entity_id, account_code=account.code, xero_account_id=""
-    ).update(is_active=False, is_deleted=True)
-    AccountModule.objects.filter(account_id=account.id).update(is_active=False)
-    return True
+    return {"message": f"{account.name} deleted."}, 200
 
 
 # ---- X2, X3: which of the Xero chart's accounts Minty uses ------------------------------------
@@ -989,7 +1000,7 @@ def _sales_from_set(user_id, entity: Entity) -> int:
             settings.save(update_fields=[c.removesuffix("_id") for c in released])
     for account in _active(entity.id).filter(source="template", is_system=False,
                                              account_type__in=KINDS["sales"]):
-        if not _used(account.id):
+        if not _used(account):
             _remove(account)
     added = 0
     for template in _templates(entity):

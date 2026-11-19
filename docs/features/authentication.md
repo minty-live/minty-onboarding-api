@@ -15,6 +15,15 @@ reference ones (`server-time`, `currencies`, `countries`). `OnboardingBearerAuth
   clock skew between hosts — `CLOCK_SKEW_LEEWAY_SECONDS`), a wrong `scope` (must be
   `"onboarding"`; `ACCEPT_ANY_SCOPE` is the documented escape hatch, `False`) and an
   unknown `user_id` are all 401. The message the wizard shows for an expired session comes from here.
+- **The sign-in behind the token** (its `sid`, Phase 9, 2026-11-19): once the user is loaded,
+  `minty_shared.tokens.session_alive` asks minty-accounts-api (`POST /api/internal/session/touch`,
+  at most once a minute per `sid` per process; the ask keeps it alive). Signed out of Minty, or 60
+  minutes without activity, is a 401 too, and the wizard sends the person to sign in again. A
+  token with no `sid` passes until it expires; accounts-api unreachable is logged at ERROR and the
+  token honoured (accounts-api's authentication.md section 3.3). When the sign-in has ENDED - the
+  token still valid, or run out too (`minty_shared.tokens.session_ended`, owner 2026-11-19) - the
+  401 is `{"error": "Unauthorized", "reason": "session_expired"}` and the wizard says the session
+  has expired instead of relaunching quietly; any other 401 carries no reason.
 - It answers only *who is this person*. **No role on an entity is required at the
   door**, unlike minty-payment-request-api: the first authenticated call, `POST /create`, exists to
   create the company the caller will then hold a role on. Every endpoint that names an

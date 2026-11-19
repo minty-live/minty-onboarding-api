@@ -535,14 +535,14 @@ def test_an_account_from_xero_is_changed_in_xero(client, auth, minty):
 
 
 @pytest.mark.django_db
-def test_removing_an_unused_account_deletes_it_and_a_used_one_is_archived(
+def test_removing_an_unused_account_deletes_it_and_a_used_one_is_refused(
     client, auth, minty, entity
 ):
     unused = _add(client, auth, minty, code="405", name="Rent", type="expense").json()["account"][
         "id"
     ]
     resp = client.delete(f"{BASE}/accounts/{unused}?entity_id={minty.id}", **auth)
-    assert resp.status_code == 200 and resp.json() == {"archived": False}
+    assert resp.status_code == 200 and resp.json() == {"message": "Rent deleted."}
     assert not AccountInfo.objects.filter(id=unused).exists()
     assert not EntityBillAccountXero.objects.filter(entity_id=minty.id).exists()
 
@@ -553,15 +553,16 @@ def test_removing_an_unused_account_deletes_it_and_a_used_one_is_archived(
         entity_id=minty.id, defaults={"discrepancy_account_id": used}
     )
     resp = client.delete(f"{BASE}/accounts/{used}?entity_id={minty.id}", **auth)
-    assert resp.json() == {"archived": True}
+    assert resp.status_code == 409
+    assert resp.json()["error"] == (
+        "Utilities is already used in your records or Petty Cash Settings, so it can't be deleted."
+    )
     account = AccountInfo.objects.get(id=used)
-    assert (account.record_status, account.status) == ("archived", "ARCHIVED")
+    assert (account.record_status, account.status) == ("active", "ACTIVE")
     assert (
-        EntityBillAccountXero.objects.get(entity_id=minty.id, account_code="410").is_deleted is True
+        EntityBillAccountXero.objects.get(entity_id=minty.id, account_code="410").is_deleted is False
     )
-    assert _setup(client, auth, minty)["accounts"]["expense"] == [], (
-        "an archived account leaves the list"
-    )
+    assert [a["name"] for a in _setup(client, auth, minty)["accounts"]["expense"]] == ["Utilities"]
 
 
 @pytest.mark.django_db

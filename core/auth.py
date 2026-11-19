@@ -45,7 +45,7 @@ import logging
 import jwt
 from django.conf import settings
 from minty_db.models import User
-from minty_shared import logctx
+from minty_shared import logctx, tokens
 from ninja.security import HttpBearer
 
 logger = logging.getLogger("minty-onboarding")
@@ -90,6 +90,10 @@ class OnboardingBearerAuth(HttpBearer):
             # Routine, not suspicious: these tokens live 60 minutes and the wizard is a
             # nine-step form somebody walks away from. info, not warning.
             logger.info("Auth rejected: token expired")
+            # Ran out AND its sign-in has ended (the usual case after 60 idle minutes): the 401
+            # says so (owner, 2026-11-19).
+            if tokens.session_ended(token, settings.ACCOUNTS_API_URL, settings.SECRET_KEY):
+                tokens.mark_session_ended(request)
             return None
         except (jwt.DecodeError, jwt.InvalidTokenError) as exc:
             logger.warning("Auth rejected: invalid token -- %s", exc)
@@ -117,6 +121,17 @@ class OnboardingBearerAuth(HttpBearer):
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
             logger.warning("Auth rejected: user %s not found", user_id)
+            return None
+
+        # The sign-in behind the token (Phase 9, 2026-11-19): signed out of Minty, or 60 minutes
+        # without activity, is a 401 here too. Asked at most once a minute per sid, and the ask
+        # keeps the sign-in alive; a token with no sid (minted before Phase 9) passes until it
+        # expires.
+        # Ended: the 401 carries ``reason: session_expired`` (owner, 2026-11-19), and the wizard
+        # says the session has expired instead of relaunching quietly.
+        if not tokens.session_alive(payload.get("sid"), settings.ACCOUNTS_API_URL, settings.SECRET_KEY):
+            logger.info("Auth rejected: the token's sign-in has ended")
+            tokens.mark_session_ended(request)
             return None
 
         request.auth_user = user

@@ -13,12 +13,13 @@ WITH OR WITHOUT XERO. A company live on Xero gets every change in Xero first - a
 contact created there, an edit sent, a delete archived - and nothing changes in Minty when Xero
 says no (its sentence is shown). A company keeping its books in Minty, or disconnected, adds and
 changes its own Minty rows; a row already linked to Xero waits for a reconnect (its change would
-otherwise be lost, or undone by the next sync). Delete is complete: deleted when nothing uses it,
-else archived - kept for the records that use it, gone from every list and picker.
+otherwise be lost, or undone by the next sync). Delete is complete when nothing uses it; a used
+account or contact can't be deleted (owner, 2026-11-18: refused, 409, before Xero is told).
 
 DELETED, THEN ADDED AGAIN (owner, 2026-11-12): brought back, never a twin. An account added with
 the code, name and type of one the company deleted - or a contact with the name of one - is that
-one: Minty's archived row restored (its module and old-reader rows on again), or, when the row went
+one: Minty's archived row restored (its module and old-reader rows on again; archived by the old
+rule, before 2026-11-18, or by a merge), or, when the row went
 (nothing used it), the archived Xero copy linked again; set ACTIVE in Xero when it is there. A
 delete marks Minty's copy of the Xero record archived at once, so nothing links to it meanwhile.
 Offline, a row still linked to Xero waits for a reconnect (it would stay archived there).
@@ -43,7 +44,6 @@ from minty_db.models import (
     Entity,
     EntityAccountXero,
     EntityBillAccountXero,
-    XeroAccount,
     XeroContact,
     XeroContactSync,
 )
@@ -64,8 +64,10 @@ CONTACT_GONE = {"error": "That contact isn't in this company. Reload the list an
 RECONNECT = {
     "error": "Xero needs to be connected again. Reconnect it in Settings, under Integration, then try again."
 }
-LINKED_OFFLINE = "{name} is in Xero. Reconnect Xero to change it, so Minty and Xero stay the same."
-COMES_BACK_OFFLINE = "{name} was archived in Xero. Reconnect Xero to bring it back."
+#: The user's rule (2026-11-19, with the owner's decisions doc A1): accounts flow from Xero to Minty.
+FROM_XERO = "This account comes from Xero. Change it in Xero, and Minty follows."
+#: The same for contacts (the user, 2026-11-19).
+CONTACT_FROM_XERO = "This contact comes from Xero. Change it in Xero, and Minty follows."
 UNANSWERED = {"error": "Xero didn't answer just now. Mind trying again in a moment?"}
 CONTACT_MAX = 150
 
@@ -140,14 +142,10 @@ def _account_row(account: AccountInfo, used: bool) -> dict:
     row = accounting._row(account, used)
     row["own"] = account.source in OWNED and not account.is_system
     row["in_xero"] = bool(account.xero_account_id)
+    # the owner's decisions doc A3 (2026-11-19): a linked account Xero archived or removed - the sync
+    # leaves a used one ARCHIVED here - is asked about in Settings: map it to an account Xero has
+    row["gone_from_xero"] = bool(account.xero_account_id) and (account.status or "").upper() != "ACTIVE"
     return row
-
-
-def _xero_account(clean: dict) -> dict:
-    body = {"Code": clean["code"] or "", "Name": clean["name"], "Type": rules.XERO_TYPE[clean["type"]]}
-    if clean["description"]:
-        body["Description"] = clean["description"]
-    return body
 
 
 def _own_account(entity_id, account_id) -> AccountInfo:
@@ -181,56 +179,29 @@ def _offer_row(row: AccountTemplate) -> dict:
             "type_label": rules.TYPE_WORDS.get(row.type, ""), "description": row.description or ""}
 
 
-def _bring_account_back(user_id, entity: Entity, clean: dict, token) -> AccountInfo | None:
+def _bring_account_back(user_id, entity: Entity, clean: dict) -> AccountInfo | None:
     """The account the company deleted with this code, name and type, brought back; None when there
-    is none (the add goes on as a new one)."""
+    is none (the add goes on as a new one). In Minty only: Minty never restores anything in the
+    customer's Xero, nor links an account Xero archived (owner's decisions doc A1/C4, 2026-11-19)."""
     same = {"code": clean["code"], "name__iexact": clean["name"], "account_type": clean["type"]}
     row = (AccountInfo.objects.filter(entity_id=entity.id, record_status="archived", merged_into__isnull=True,
                                       is_system=False, **same)
            .order_by(F("xero_account_id").desc(nulls_last=True)).first())
-    if row is not None:
-        if row.xero_account_id:
-            if token is None:
-                raise _Stop({"error": COMES_BACK_OFFLINE.format(name=row.name)}, 409)
-            _send(token, entity, "POST", f"Accounts/{row.xero_account_id}", {"Status": "ACTIVE"})
-            _copy_status(XeroAccount, entity, row.xero_account_id, "ACTIVE")
-        with transaction.atomic():
-            row.record_status, row.status = "active", "ACTIVE"
-            row.save(update_fields=["record_status", "status"])
-            AccountModule.objects.filter(account_id=row.id).update(is_active=True)
-            EntityAccountXero.objects.filter(account_id=row.id).update(is_active=True)
-            EntityBillAccountXero.objects.filter(entity_id=entity.id, account_code=row.code, xero_account_id="",
-                                                 is_deleted=True).update(is_deleted=False, is_active=True)
-            # its own name kept (matched ignoring case); a description typed now is taken
-            accounting._apply_update(entity, row, {**clean, "name": row.name})
-        logger.info("chart: entity %s brought account %s back", entity.id, row.id)
-        return row
-    if token is None:
+    if row is None:
         return None
-    held = set(AccountInfo.objects.filter(entity_id=entity.id, xero_account_id__isnull=False)
-               .values_list("xero_account_id", flat=True))
-    copy = next((c for c in XeroAccount.objects.filter(entity_id=entity.id, xero_org_id=str(entity.xero_org_id),
-                                                       code=clean["code"], xero_type=rules.XERO_TYPE[clean["type"]])
-                 .exclude(status="ACTIVE")
-                 if _key(c.name) == _key(clean["name"]) and c.xero_guid not in held), None)
-    if copy is None:
-        return None
-    _send(token, entity, "POST", f"Accounts/{copy.xero_guid}", {"Status": "ACTIVE"})
-    _copy_status(XeroAccount, entity, copy.xero_guid, "ACTIVE")
     with transaction.atomic():
-        row = accounting._create(user_id, entity, clean["code"], clean["name"], clean["type"], clean["description"],
-                                 source="user")
-        AccountInfo.objects.filter(id=row.id).update(xero_account_id=copy.xero_guid)
-        row.xero_account_id = copy.xero_guid
-    logger.info("chart: entity %s brought Xero's archived account %s back", entity.id, copy.xero_guid)
+        row.record_status = "active"
+        if not row.xero_account_id:
+            row.status = "ACTIVE"  # a linked one keeps Xero's status: archived there, Settings asks (A3)
+        row.save(update_fields=["record_status", "status"])
+        AccountModule.objects.filter(account_id=row.id).update(is_active=True)
+        EntityAccountXero.objects.filter(account_id=row.id).update(is_active=True)
+        EntityBillAccountXero.objects.filter(entity_id=entity.id, account_code=row.code, xero_account_id="",
+                                             is_deleted=True).update(is_deleted=False, is_active=True)
+        # its own name kept (matched ignoring case); a description typed now is taken
+        accounting._apply_update(entity, row, {**clean, "name": row.name})
+    logger.info("chart: entity %s brought account %s back", entity.id, row.id)
     return row
-
-
-def _copy_status(model, entity: Entity, guid: str, status: str) -> None:
-    """Minty's copy of a Xero record (``xero_account`` / ``xero_contact``) follows what we just did
-    in Xero, without waiting for the next sync."""
-    model.objects.filter(entity_id=entity.id, xero_org_id=str(entity.xero_org_id), xero_guid=guid).update(
-        status=status)
 
 
 def _checked(entity_id, payload: dict, exclude=None) -> dict:
@@ -247,6 +218,14 @@ def accounts(user_id, entity_id) -> tuple[dict, int]:
     types, and each type's next free code."""
     entity = _gate(user_id, entity_id, Permission.COA_VIEW)
     rows = [a for a in accounting._active(entity_id).order_by("code", "name") if not a.is_system]
+    # the owner's decisions doc A3 (2026-11-19): a linked account Xero archived or removed is archived
+    # here too (the sync sets its status, a trigger its record status) - while records use it, it
+    # stays in the list, marked, for the person to map it to an account Xero has
+    gone = list(AccountInfo.objects.filter(entity_id=entity_id, record_status="archived", is_system=False,
+                                           merged_into__isnull=True, xero_account_id__isnull=False)
+                .exclude(status="ACTIVE").order_by("code", "name"))
+    used_gone = accounting._held(entity_id, [a.id for a in gone])
+    rows += [a for a in gone if a.id in used_gone]
     held = accounting._held(entity_id, [a.id for a in rows])
     taken = list(accounting._active(entity_id).values_list("code", "account_type"))
     return {
@@ -262,8 +241,9 @@ def accounts(user_id, entity_id) -> tuple[dict, int]:
 @_answer
 def add_account(user_id, entity_id, payload: dict) -> tuple[dict, int]:
     """A new account: the company's own, or - with ``template_id`` - one of Minty's, added as
-    Minty's copy (its module and daily-closing defaults, as onboarding's Auto Fill). In Xero first
-    when the company is live there."""
+    Minty's copy (its module and daily-closing defaults, as onboarding's Auto Fill). Never created in
+    Xero (owner's decisions doc A1, 2026-11-19): it is mapped to a Xero account on the matching
+    screen."""
     entity = _gate(user_id, entity_id, Permission.COA_CREATE)
     template = None
     if payload.get("template_id"):
@@ -274,43 +254,30 @@ def add_account(user_id, entity_id, payload: dict) -> tuple[dict, int]:
         payload = {"code": template.code, "name": template.name, "type": template.type,
                    "description": template.description}
     clean = _checked(entity_id, payload)
-    token = _xero(entity)
     if template is None:
-        back = _bring_account_back(user_id, entity, clean, token)
+        back = _bring_account_back(user_id, entity, clean)
         if back is not None:
             return {"account": _account_row(back, back.id in accounting._held(entity_id, [back.id])),
                     "message": f"{back.name} is back."}, 201
-    xero_id = None
-    if token:
-        made = _send(token, entity, "PUT", "Accounts", _xero_account(clean))
-        xero_id = ((made.get("Accounts") or [{}])[0]).get("AccountID")
-        if not xero_id:
-            logger.error("chart: Xero made account %r for entity %s but sent no id", clean["name"], entity_id)
-            raise _Stop(UNANSWERED, 502)
     with transaction.atomic():
         if template is not None:
             account = accounting._from_template(user_id, entity, template)
         else:
             account = accounting._create(user_id, entity, clean["code"], clean["name"], clean["type"],
                                          clean["description"], source="user")
-        if xero_id:
-            AccountInfo.objects.filter(id=account.id).update(xero_account_id=xero_id)
-            account.xero_account_id = xero_id
-    logger.info("chart: entity %s added account %s (in Xero: %s)", entity_id, account.id, bool(xero_id))
+    logger.info("chart: entity %s added account %s", entity_id, account.id)
     return {"account": _account_row(account, False), "message": f"{account.name} added."}, 201
 
 
 @_answer
 def edit_account(user_id, entity_id, account_id, payload: dict) -> tuple[dict, int]:
-    """The company's own account changed - in Xero first when it is linked there."""
+    """The company's own account changed. One linked to Xero is changed in Xero only (the user,
+    2026-11-19, with the owner's decisions doc A1: accounts flow from Xero to Minty)."""
     entity = _gate(user_id, entity_id, Permission.COA_UPDATE)
     account = _own_account(entity_id, account_id)
-    clean = _checked(entity_id, payload, exclude=account.id)
     if account.xero_account_id:
-        token = _xero(entity)
-        if token is None:
-            raise _Stop({"error": LINKED_OFFLINE.format(name=account.name)}, 409)
-        _send(token, entity, "POST", f"Accounts/{account.xero_account_id}", _xero_account(clean))
+        raise _Stop({"error": FROM_XERO}, 409)
+    clean = _checked(entity_id, payload, exclude=account.id)
     with transaction.atomic():
         accounting._apply_update(entity, account, clean)
     used = account.id in accounting._held(entity_id, [account.id])
@@ -319,20 +286,18 @@ def edit_account(user_id, entity_id, account_id, payload: dict) -> tuple[dict, i
 
 @_answer
 def delete_account(user_id, entity_id, account_id) -> tuple[dict, int]:
-    """The company's own account taken away: deleted, or archived when something uses it; archived
-    in Xero too when it is linked there."""
-    entity = _gate(user_id, entity_id, Permission.COA_DELETE)
+    """The company's own account taken away: deleted. A used one is refused (owner, 2026-11-18); one
+    linked to Xero is deleted in Xero only (the user, 2026-11-19)."""
+    _gate(user_id, entity_id, Permission.COA_DELETE)
     account = _own_account(entity_id, account_id)
     if account.xero_account_id:
-        token = _xero(entity)
-        if token is None:
-            raise _Stop({"error": LINKED_OFFLINE.format(name=account.name)}, 409)
-        _send(token, entity, "POST", f"Accounts/{account.xero_account_id}", {"Status": "ARCHIVED"})
-        _copy_status(XeroAccount, entity, account.xero_account_id, "ARCHIVED")
+        raise _Stop({"error": FROM_XERO}, 409)
+    if accounting._used(account):
+        raise _Stop({"error": accounting.USED_ACCOUNT.format(name=account.name)}, 409)
     with transaction.atomic():
-        archived = accounting._retire(account)
-    logger.info("chart: entity %s %s account %s", entity_id, "archived" if archived else "deleted", account.id)
-    return {"archived": archived, "message": f"{account.name} deleted."}, 200
+        accounting._remove(account)
+    logger.info("chart: entity %s deleted account %s", entity_id, account_id)
+    return {"message": f"{account.name} deleted."}, 200
 
 
 # ---- contacts --------------------------------------------------------------------------------------
@@ -369,12 +334,20 @@ def _taken(entity_id, name: str, exclude=None) -> None:
         raise _Stop({"error": sentence, "fields": {"name": sentence}}, 409)
 
 
+#: A used contact is never deleted (owner, 2026-11-18): it stays, and the delete is refused.
+USED_CONTACT = "{name} is already used in your records or Petty Cash Settings, so it can't be deleted."
+
+
 def _contacts_used(entity_id) -> set:
+    """The contacts something uses: an expense line, a bill, a contact combined into it, or one of
+    daily closing's contacts."""
     from minty_db.models import Bill, EntityPettycashSettings, ReportExpense
 
     used = set(ReportExpense.objects.filter(report__entity_id=entity_id, contact_id__isnull=False)
                .values_list("contact_id", flat=True))
     used |= set(Bill.objects.filter(entity_id=entity_id, contact_id__isnull=False).values_list("contact_id", flat=True))
+    used |= set(XeroContactSync.objects.filter(entity_id=entity_id, merged_into__isnull=False)
+                .values_list("merged_into_id", flat=True))
     slots = ("director_contact_id", "cash_sale_contact_id", "discrepancy_contact_id")
     settings = EntityPettycashSettings.objects.filter(entity_id=entity_id).values(*slots).first()
     return used | {v for v in (settings or {}).values() if v}
@@ -406,8 +379,10 @@ def contacts(user_id, entity_id) -> tuple[dict, int]:
 
 
 def _xero_contact_for(token, entity: Entity, name: str) -> str:
-    """The Xero contact of that name the company doesn't hold yet (from the stored copies), else a
-    new one made in Xero. Its ContactID."""
+    """The Xero contact of that name the company doesn't hold yet - from the stored copies, else
+    searched live (``GET /Contacts?searchTerm=``, Xero's loose case-insensitive search, so only the
+    exact name counts) - else a new one made in Xero as a supplier. Its ContactID; never a twin in
+    Xero (owner's decisions doc C5, 2026-11-19)."""
     held = set(XeroContactSync.objects.filter(entity_id=entity.id, xero_contact_id__isnull=False)
                .values_list("xero_contact_id", flat=True))
     copy = next((c for c in XeroContact.objects.filter(entity_id=entity.id, xero_org_id=str(entity.xero_org_id),
@@ -415,6 +390,16 @@ def _xero_contact_for(token, entity: Entity, name: str) -> str:
                  if _key(c.name) == _key(name) and c.xero_guid not in held), None)
     if copy is not None:
         return copy.xero_guid
+    try:
+        found = xero_client.get(token, entity.xero_org_id, "Contacts",
+                                {"searchTerm": " ".join(name.split()), "page": 1}).get("Contacts") or []
+    except xero_client.XeroUnanswered:
+        raise _Stop(UNANSWERED, 502) from None
+    match = next((c["ContactID"] for c in found
+                  if c.get("ContactID") and _key(c.get("Name")) == _key(name) and c["ContactID"] not in held
+                  and str(c.get("ContactStatus") or "ACTIVE").upper() == "ACTIVE"), None)
+    if match is not None:
+        return match
     made = _send(token, entity, "POST", "Contacts",
                  {"Contacts": [{"Name": name, "IsCustomer": False, "IsSupplier": True}]})
     xero_id = ((made.get("Contacts") or [{}])[0]).get("ContactID")
@@ -449,9 +434,10 @@ def find_or_make_contact(user_id, entity: Entity, name: str, token: str | None) 
 
 
 def _bring_contact_back(entity: Entity, name: str, token) -> XeroContactSync | None:
-    """The contact the company deleted with this name, brought back: its archived row active again
-    (ACTIVE in Xero when linked), or - its row gone - Xero's archived contact of the name linked to a
-    new row and set ACTIVE there. None when there is none."""
+    """The contact the company deleted with this name, brought back: its archived row active again,
+    or - its row gone - Xero's archived contact of the name linked to a new row as it stands. None
+    when there is none. Minty never restores anything in the customer's Xero (owner's decisions doc
+    C4, 2026-11-19): one Xero still holds archived is asked about at publish."""
     key = _key(name)
     if _holder(entity.id, name) is not None:
         return None
@@ -460,12 +446,6 @@ def _bring_contact_back(entity: Entity, name: str, token) -> XeroContactSync | N
                   key=lambda c: not c.xero_contact_id)
     if gone:
         row = gone[0]
-        if row.xero_contact_id:
-            if token is None:
-                raise _Stop({"error": COMES_BACK_OFFLINE.format(name=row.name)}, 409)
-            _send(token, entity, "POST", "Contacts",
-                  {"Contacts": [{"ContactID": row.xero_contact_id, "ContactStatus": "ACTIVE"}]})
-            _copy_status(XeroContact, entity, row.xero_contact_id, "ACTIVE")
         XeroContactSync.objects.filter(id=row.id).update(record_status="active")
         row.record_status = "active"
         logger.info("chart: entity %s brought contact %s back", entity.id, row.id)
@@ -478,12 +458,10 @@ def _bring_contact_back(entity: Entity, name: str, token) -> XeroContactSync | N
                  .exclude(status="ACTIVE") if _key(c.name) == key and c.xero_guid not in held), None)
     if copy is None:
         return None
-    _send(token, entity, "POST", "Contacts", {"Contacts": [{"ContactID": copy.xero_guid, "ContactStatus": "ACTIVE"}]})
-    _copy_status(XeroContact, entity, copy.xero_guid, "ACTIVE")
     row = XeroContactSync.objects.create(entity_id=entity.id, name=copy.name[:150], source="xero",
                                          xero_contact_id=copy.xero_guid, xero_org_id=str(entity.xero_org_id),
                                          xero_contact_link_id=copy.id, category="expense_contact")
-    logger.info("chart: entity %s brought Xero's archived contact %s back", entity.id, copy.xero_guid)
+    logger.info("chart: entity %s linked Xero's archived contact %s again, as it stands", entity.id, copy.xero_guid)
     return row
 
 
@@ -501,15 +479,14 @@ def add_contact(user_id, entity_id, payload: dict) -> tuple[dict, int]:
 
 @_answer
 def edit_contact(user_id, entity_id, contact_id, payload: dict) -> tuple[dict, int]:
-    entity = _gate(user_id, entity_id, Permission.COA_UPDATE)
+    """The company's contact renamed. One linked to Xero is changed in Xero only (the user,
+    2026-11-19, as for accounts)."""
+    _gate(user_id, entity_id, Permission.COA_UPDATE)
     contact = _own_contact(entity_id, contact_id)
+    if contact.xero_contact_id:
+        raise _Stop({"error": CONTACT_FROM_XERO}, 409)
     name = _contact_name(payload)
     _taken(entity_id, name, exclude=contact.id)
-    if contact.xero_contact_id:
-        token = _xero(entity)
-        if token is None:
-            raise _Stop({"error": LINKED_OFFLINE.format(name=contact.name)}, 409)
-        _send(token, entity, "POST", "Contacts", {"Contacts": [{"ContactID": contact.xero_contact_id, "Name": name}]})
     contact.name = name
     contact.save(update_fields=["name"])
     used = contact.id in _contacts_used(entity_id)
@@ -518,19 +495,14 @@ def edit_contact(user_id, entity_id, contact_id, payload: dict) -> tuple[dict, i
 
 @_answer
 def delete_contact(user_id, entity_id, contact_id) -> tuple[dict, int]:
-    entity = _gate(user_id, entity_id, Permission.COA_DELETE)
+    """The company's contact taken away: deleted. A used one is refused (owner, 2026-11-18); one
+    linked to Xero is deleted in Xero only (the user, 2026-11-19, as for accounts)."""
+    _gate(user_id, entity_id, Permission.COA_DELETE)
     contact = _own_contact(entity_id, contact_id)
     if contact.xero_contact_id:
-        token = _xero(entity)
-        if token is None:
-            raise _Stop({"error": LINKED_OFFLINE.format(name=contact.name)}, 409)
-        _send(token, entity, "POST", "Contacts",
-              {"Contacts": [{"ContactID": contact.xero_contact_id, "ContactStatus": "ARCHIVED"}]})
-        _copy_status(XeroContact, entity, contact.xero_contact_id, "ARCHIVED")
-    archived = contact.id in _contacts_used(entity_id)
-    if archived:
-        XeroContactSync.objects.filter(id=contact.id).update(record_status="archived")
-    else:
-        contact.delete()
-    logger.info("chart: entity %s %s contact %s", entity_id, "archived" if archived else "deleted", contact_id)
-    return {"archived": archived, "message": f"{contact.name} deleted."}, 200
+        raise _Stop({"error": CONTACT_FROM_XERO}, 409)
+    if contact.id in _contacts_used(entity_id):
+        raise _Stop({"error": USED_CONTACT.format(name=contact.name)}, 409)
+    contact.delete()
+    logger.info("chart: entity %s deleted contact %s", entity_id, contact_id)
+    return {"message": f"{contact.name} deleted."}, 200

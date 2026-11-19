@@ -170,7 +170,7 @@ field, 409 for a code or name another active account holds.
 | `POST /accounting/business {business_type, uses_sales_cash}` | 4.2 | `fnb`/`retail`/`service`/`general`, or null = "None of these"; the cash question is required for every company and "Not sure" arrives as `true`. On the Minty path the template's shared system rows (Petty Cash, Bank, Amount Due to Director) are added then, hidden, and fill their daily-closing accounts. Since 2026-11-11 (owner: no sales screen) the set's ticked sales accounts are added too (`_sales_from_set`), so Cash Sales fills its daily-closing account; changing the answer removes the old set's unused sales rows (and releases its cash-sale slot) before adding the new set's. The company's Cash sales method (`entity_sale_setting` for `sale_info.value_name = 'cash_sales'`) follows the answer: `false` ("We bank all sales") turns it off, `true` on (linked if missing); such a company's `GET /accounting` has no `cash_sale` slot (owner's brief, 2026-11-10) |
 | `POST /accounting/sales-accounts {cash, electronic, delivery}` | the sales accounts screen (owner, 2026-11-17; Figma 464:73 row 1) | Three booleans, each required (400 otherwise); none true is 400 "No sales account is ticked yet. Tick at least one to continue." (`fields.sales_accounts`). COA_UPDATE. Screen only: no account is made or removed. `cash` is `uses_sales_cash` - a change runs 4.2's cash effects (the Cash method, and on the Minty path the set's sales rows and cash-sale slot); `electronic`/`delivery` are `entities.sells_electronic`/`sells_delivery` (minty-db v0.11). An unticked list's methods go as step 5's save would take them out (Minty's switched off, the company's own deleted unless a report used it). Answers the step's answers. `GET /accounting`, `/state`'s `accounting` and the sales-methods read carry `sells_cash`, `sells_electronic`, `sells_delivery` (in effect: NULL = the business type picks - Restaurant & Food both, retail/service/general Electronic only, "None of these" (no type, the cash question answered) neither - owner 2026-11-18; a company from before the questions both) and `sales_chosen`. On the Minty path each ticked account with no code yet is linked to its code (minty-db v0.12, owner 2026-11-17): Electronic Payment to 4001, Delivery to 4002 (4004 first for General), the sheet's row added when the set did not add it; a business-type change releases the set's links with its rows and links the new set's; a service business (no delivery row) links none |
 | `GET /accounting/autofill?kind=` / `POST {kind, template_ids}` / `POST /accounting/autofill/revert {kind}` | 4.3, 4.4 | the company's template set for `sales` or `expense` (its business type, or General for "None of these"; its cash answer; its country or every country), ticked where the template says; adding skips a row already there and refuses one whose code or name is taken; each added account shows in the modules its row ticks (`pettycash_default` / `payment_request_default` -> `account_module` and the old `entity_account_xero` / `entity_bill_account_xero` rows, inactive where unticked), and a row with a `pettycash_role` (e.g. Cash Sales) fills that daily-closing account when it is still empty (2026-11-10, the accounting team's sheet); an account the person adds is in both modules; Revert removes the Auto Fill rows nothing uses. The templates are Minty's `docs/schema/seed_account_templates.sql` |
-| `POST /accounting/accounts {code, name, type, description?, role?}` / `PATCH /accounting/accounts/{id}` / `DELETE /accounting/accounts/{id}` | 4.3b, 4.4a, 4.5a | one account: code (letters, numbers, dots, dashes; up to 10; a bank account may have none), name (up to 80 until CONTRACT widens it), type; `role` also chooses it for that daily-closing account. An account from Xero is changed in Xero (409). Removing deletes an unused account and archives a used one; a system account can't be removed |
+| `POST /accounting/accounts {code, name, type, description?, role?}` / `PATCH /accounting/accounts/{id}` / `DELETE /accounting/accounts/{id}` | 4.3b, 4.4a, 4.5a | one account: code (letters, numbers, dots, dashes; up to 10; a bank account may have none), name (up to 80 until CONTRACT widens it), type; `role` also chooses it for that daily-closing account. An account from Xero is changed in Xero (409). Removing deletes an unused account and refuses a used one (409, owner 2026-11-18); a system account can't be removed |
 | `POST /accounting/xero-accounts {kind, account_ids}` | X3 (Xero path, 2026-11-10; X2's sales screen removed 2026-11-11, the route still takes `sales`) | Exactly these of the synced Xero `sales`/`expense` accounts are Minty's: Petty Cash's `account_module` rows (`is_active`), and for expenses `entity_account_xero.is_active` too (`xero_lists._tick_codes`, the apps' old reader). 400 for none ticked ("Tick at least one sales account to continue."), a row of the wrong kind, a Minty-made or another company's row; 409 when not connected (a kept org after a disconnect is not). Answers the whole step (`GET /accounting`), whose rows now carry `used` |
 | `POST /accounting/xero-refresh` | Refresh from Xero (X2-X4) | accounts-api's one sync (`core/xero_client.sync`), then the whole step again; 502 _Xero didn't send your accounts just now. Try Refresh again in a moment._; 409 when not connected |
 | `POST /accounting/slots {role, account_id \| null}` | (4.5, removed from the wizard 2026-11-11; kept for the route's callers) | `petty_cash`, `bank`, `cash_sale`, `discrepancy`, `director` -> `entity_pettycash_settings`; an account of the wrong type is refused, and petty cash and the bank can't be one account. Petty cash also fills `discrepancy_bank_account_id` (as the old step 6 did; Petty Cash and finalize read it). Missing ones only warn: Petty Cash asks again before the first closing |
@@ -291,12 +291,19 @@ claims `entity_id` and `user_id`; anything else 401). The person's rights are ch
   (422, `core/xero_client.write`), unanswered 502, and nothing changes in Minty. A live company with
   no token: 409, reconnect. Not live: the company's own Minty rows; a row already linked to Xero
   waits for a reconnect (409).
-- **Delete is complete**: deleted when unused, else archived (kept for its records, off every list
-  and picker, its module rows off).
+- **A used account or contact can't be deleted** (owner, 2026-11-18): refused with 409 "<name> is
+  already used in your records or Petty Cash Settings, so it can't be deleted.", checked before
+  Xero is told anything. "Used" is accounts-api's rule (`xero/services/usage.py`): an expense line,
+  a bill line (by id, or by code on a line saved before `bill_line.account_id`), daily closing's
+  accounts or contacts, or a record combined into it (`merged_into_id`); accounting's `_used`/`_held`
+  and chart's `_contacts_used`. An unused one is deleted (archived in Xero when linked). Rows
+  archived before that day (the old rule) still come back when added again.
 - **No duplicate contacts.** Names are unique per company among active ones (case and inner spaces
-  ignored; 409 naming the existing one). A live company's new contact links to the stored Xero
-  contact of that name before making one; a Minty-made contact met while live goes into Xero
-  then (`find_or_make_contact`, also behind the wizard's `/contacts/create`).
+  ignored; 409 naming the existing one). A live company's new contact links to Xero's contact of
+  that name - the stored copies, then a live `GET /Contacts?searchTerm=` narrowed to the exact name
+  (owner's decisions doc C5, 2026-11-19) - before making one there as a supplier; a Minty-made
+  contact met while live goes into Xero then (`find_or_make_contact`, also behind the wizard's
+  `/contacts/create`). Xero not answering the search adds nothing (502).
 - **Deleted, then added again: brought back, never a twin** (owner, 2026-11-12). An account added
   with the code, name and type of one the company deleted - or a contact with the name of one - is
   that one: Minty's archived row restored (its name kept; modules and old-reader rows on again), or,
@@ -319,3 +326,19 @@ and `test_schema_name.py` (the schema), `test_settings_guard.py`; 399 passed + 1
 `setup_mode = 'minty'` alone - an organisation recorded while minty-accounts-api matches the
 company's accounts leaves it Minty's until matching's Finish sets `'xero'`. Finalize never marks such
 a company `connected` (only matching does, once its accounts and suppliers are in Xero).
+
+## Accounts stay in Minty (the owner's decisions doc A1, A3, C4, 2026-11-19)
+
+- **A1**: adding an account (Settings' General, `chart.add_account`) never creates it in Xero - it is mapped
+  on the matching screen. Xero's archived account of the same code and name is neither restored nor linked.
+- **Linked accounts are changed in Xero only** (the user, 2026-11-19): `chart.edit_account` /
+  `delete_account` refuse an account with a Xero id - 409 "This account comes from Xero. Change it in Xero,
+  and Minty follows."
+- **A3**: `GET .../accounts` rows carry `gone_from_xero`; a linked account Xero archived or removed (the
+  sync archives it here too - a trigger follows its status) stays in the list while records use it, for
+  Settings to ask the person to map it.
+- **C4**: Minty never restores anything in Xero - a deleted account or contact added again comes back in
+  Minty only; Xero's archived contact of the name is linked as it stands.
+- **Linked contacts are changed in Xero only too** (the user, 2026-11-19): `chart.edit_contact` /
+  `delete_contact` refuse a contact with a Xero id - 409 "This contact comes from Xero. Change it in Xero,
+  and Minty follows." Only contacts made in Minty and not yet in Xero are renamed or deleted here.

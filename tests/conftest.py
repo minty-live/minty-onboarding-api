@@ -47,7 +47,7 @@ requires_postgres = pytest.mark.skipif(
 )
 
 
-def make_token(user_id, *, scope="onboarding", minutes=60, key=None):
+def make_token(user_id, *, scope="onboarding", minutes=60, key=None, **claims):
     """A JWT shaped exactly like the one Flask mints.
 
     Kept as a helper rather than a fixture because half the auth tests need to vary one
@@ -59,6 +59,7 @@ def make_token(user_id, *, scope="onboarding", minutes=60, key=None):
             "scope": scope,
             "exp": datetime.now(UTC) + timedelta(minutes=minutes),
             "iat": datetime.now(UTC),
+            **claims,
         },
         key or settings.SECRET_KEY,
         algorithm="HS256",
