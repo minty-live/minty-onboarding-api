@@ -63,6 +63,8 @@ PORTED = {
     "POST /accounting/autofill",
     "POST /accounting/autofill/revert",
     "POST /accounting/accounts",
+    # 4.4's Save & Next (2026-11-20): the whole held list in one transaction.
+    "PUT /accounting/accounts",
     "PATCH /accounting/accounts/{account_id}",
     "DELETE /accounting/accounts/{account_id}",
     "POST /accounting/slots",
@@ -218,9 +220,10 @@ def test_the_whole_flask_surface_is_answered():
     Refresh from Xero.
 
     32 -> 33 on 2026-11-17: ``POST /accounting/sales-accounts``, the sales accounts screen. 33 -> 35
-    on 2026-11-18: ``GET``/``POST /petty-cash-codes``, Petty Cash Settings' Account Code.
+    on 2026-11-18: ``GET``/``POST /petty-cash-codes``, Petty Cash Settings' Account Code. 35 -> 36
+    on 2026-11-20: ``PUT /accounting/accounts``, 4.4's Save & Next (the whole held list at once).
     """
-    assert len(PORTED) == 35
+    assert len(PORTED) == 36
     assert len(PROXIED) == 17
-    assert len(EXPECTED) == 52
+    assert len(EXPECTED) == 53
     assert set(_operations()) == EXPECTED

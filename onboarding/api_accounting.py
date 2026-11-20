@@ -118,6 +118,24 @@ def post_account(request, payload: dict = Body(default={})):
     )
 
 
+@accounting_router.put("/accounting/accounts")
+def put_accounts(request, payload: dict = Body(default={})):
+    """4.3 / 4.4's Save & Next (2026-11-20) - ``{entity_id, kind, template_ids: [...], accounts:
+    [{id?, code, name, type, description?}]}``: the list as the screen holds it, in one transaction
+    (``accounting.save_accounts``). Answers the whole step."""
+    entity_id = _entity(request, payload)
+    return _changed(
+        entity_id,
+        lambda: accounting.save_accounts(
+            request.auth_user_id,
+            entity_id,
+            payload.get("kind"),
+            payload.get("template_ids"),
+            payload.get("accounts"),
+        ),
+    )
+
+
 @accounting_router.patch("/accounting/accounts/{account_id}")
 def patch_account(request, account_id: str, payload: dict = Body(default={})):
     """``{entity_id, code, name, type, description?}`` - edit one account."""

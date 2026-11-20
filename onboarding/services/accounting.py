@@ -862,6 +862,134 @@ def delete_account(user_id, entity_id, account_id) -> tuple[dict, int]:
     return {"message": f"{account.name} deleted."}, 200
 
 
+# ---- 4.3 / 4.4's Save & Next: the whole list at once (2026-11-20) -----------------------------
+
+NOT_IN_COMPANY = {"error": "That account isn't in this company. Reload the list and try again."}
+WHOLE_LIST = "The list of accounts didn't arrive whole. Reload the page and try again."
+WRONG_LIST_TYPE = "That type can't be used for this account. Choose one from the list."
+
+
+def _refused(fields: dict) -> tuple[dict, int]:
+    """One account's field sentences as a refusal: 409 for a code or name taken, else 400."""
+    return {"error": next(iter(fields.values())), "fields": fields}, 409 if _is_clash(fields) else 400
+
+
+def _same(account: AccountInfo, clean: dict) -> bool:
+    return (account.code or None, account.name, account.account_type, account.description or None) == (
+        clean["code"],
+        clean["name"],
+        clean["type"],
+        clean["description"],
+    )
+
+
+def save_accounts(user_id, entity_id, kind, template_ids, rows) -> tuple[dict, int]:
+    """4.3 / 4.4's Save & Next: the list as the screen holds it, in one transaction, so the screen
+    keeps every tick, edit, add and remove until then (as X3's ``set_xero_ticks`` does).
+
+    ``rows`` are the company's own accounts of ``kind`` to keep - each with its ``id`` (kept, and
+    edited as ``update_account`` does when a field changed) or without one (added, as
+    ``create_account``) - and ``template_ids`` the Auto Fill rows ticked (added as
+    ``apply_autofill``; one already there is left alone). Every Minty-made account of the kind left
+    out is removed as ``delete_account`` removes it: a used one refuses the whole save
+    (``USED_ACCOUNT``). The shared system rows and the accounts from Xero are not the screen's and
+    are left alone. Any refusal writes nothing. Answers the whole step (``setup``)."""
+    if not has_permission_by_user_id(user_id, Permission.COA_UPDATE, entity_id):
+        return DENIED, 403
+    if kind not in KINDS:
+        return {"error": "Choose which accounts to save."}, 400
+    if (
+        not isinstance(template_ids, list)
+        or not isinstance(rows, list)
+        or not all(isinstance(r, dict) for r in rows)
+    ):
+        return {"error": WHOLE_LIST}, 400
+    entity = _entity(entity_id)
+    if entity is None:
+        return NOT_FOUND, 404
+    own = {
+        str(a.id): a
+        for a in _active(entity_id)
+        .filter(account_type__in=KINDS[kind], is_system=False)
+        .filter(Q(xero_account_id__isnull=True) | Q(xero_account_id=""))
+    }
+    kept_ids = [str(r["id"]) for r in rows if r.get("id")]
+    if len(set(kept_ids)) != len(kept_ids):
+        return {"error": WHOLE_LIST}, 400
+    if not set(kept_ids) <= set(own):
+        return NOT_IN_COMPANY, 404
+    removed = [a for i, a in own.items() if i not in set(kept_ids)]
+    added = [r for r in rows if not r.get("id")]
+    offered = {
+        str(t.id): t for t in _templates(entity) if t.type in KINDS[kind] and not t.is_system
+    }
+    wanted = list(dict.fromkeys(str(x) for x in template_ids))
+    if not set(wanted) <= set(offered):
+        return {
+            "error": "Some of those accounts are not offered for this company. Reload the list and try again."
+        }, 400
+    # each change asks for the permission its own route asks for
+    if removed and not has_permission_by_user_id(user_id, Permission.COA_DELETE, entity_id):
+        return DENIED, 403
+    if (added or wanted) and not has_permission_by_user_id(user_id, Permission.COA_CREATE, entity_id):
+        return DENIED, 403
+
+    counts = {"removed": 0, "edited": 0, "ticked": 0, "added": 0}
+    with transaction.atomic():
+        # removals first, so a code or name they free can be taken by the rows after them
+        for account in removed:
+            if _used(account):
+                transaction.set_rollback(True)
+                return {"error": USED_ACCOUNT.format(name=account.name)}, 409
+            _remove(account)
+            counts["removed"] += 1
+        for row in rows:
+            if not row.get("id"):
+                continue
+            account = own[str(row["id"])]
+            clean, fields = accounts_rules.check_fields(row)
+            if not fields and _same(account, clean):
+                continue
+            if not fields and clean["type"] not in KINDS[kind]:
+                fields = {"type": WRONG_LIST_TYPE}
+            if not fields:
+                fields = _clash(entity_id, clean["code"], clean["name"], account.id)
+            if fields:
+                transaction.set_rollback(True)
+                return _refused(fields)
+            _apply_update(entity, account, clean)
+            counts["edited"] += 1
+        for template_id in wanted:
+            template = offered[template_id]
+            if _present(entity_id, template):
+                continue
+            fields = _clash(entity_id, template.code, template.name)
+            if fields:
+                transaction.set_rollback(True)
+                return {"error": next(iter(fields.values())), "fields": fields}, 409
+            _from_template(user_id, entity, template)
+            counts["ticked"] += 1
+        for row in added:
+            clean, fields = _check(entity_id, row)
+            if not fields and clean["type"] not in KINDS[kind]:
+                fields = {"type": WRONG_LIST_TYPE}
+            if fields:
+                transaction.set_rollback(True)
+                return _refused(fields)
+            _create(
+                user_id,
+                entity,
+                clean["code"],
+                clean["name"],
+                clean["type"],
+                clean["description"],
+                source="user",
+            )
+            counts["added"] += 1
+    logger.info("accounting: entity %s saved its %s list %s", entity_id, kind, counts)
+    return setup(user_id, entity_id)
+
+
 # ---- X2, X3: which of the Xero chart's accounts Minty uses ------------------------------------
 
 NOT_CONNECTED = {"error": "Connect Xero first, then choose the accounts Minty uses."}

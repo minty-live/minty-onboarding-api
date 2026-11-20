@@ -592,6 +592,274 @@ def test_another_companys_account_is_not_found(client, auth, minty, countries):
     )
 
 
+# ---- 4.4's Save & Next: the whole list in one call (2026-11-20) -------------------------------------
+
+
+def put(client, auth, path, payload):
+    return client.put(BASE + path, payload, content_type="application/json", **auth)
+
+
+def _row_of(account: dict, **changes) -> dict:
+    """An account as the screen sends it back: its id and its four fields."""
+    fields = {k: account[k] for k in ("id", "code", "name", "type", "description")}
+    return {**fields, **changes}
+
+
+def _expense_state(entity) -> dict:
+    """Every expense account of the company by name: (code, source, description)."""
+    return {
+        a.name: (a.code, a.source, a.description)
+        for a in AccountInfo.objects.filter(
+            entity_id=entity.id, account_type__in=accounting.KINDS["expense"], is_system=False
+        )
+    }
+
+
+@pytest.fixture
+def held_list(client, auth, minty, templates):
+    """An F&B company with Cleaning from Auto Fill and two accounts of its own."""
+    _answer(client, auth, minty)
+    post(
+        client,
+        auth,
+        "/autofill",
+        {
+            "entity_id": str(minty.id),
+            "kind": "expense",
+            "template_ids": [str(templates["Cleaning"].id)],
+        },
+    )
+    _add(client, auth, minty, code="499", name="Sundries", type="expense")
+    _add(client, auth, minty, code="498", name="Repairs", type="expense")
+    return {r["name"]: r for r in _setup(client, auth, minty)["accounts"]["expense"]}
+
+
+@pytest.mark.django_db
+def test_saving_the_list_applies_every_change_in_one_call(client, auth, minty, templates, held_list):
+    """Ticks, edits, adds and removes the screen held all land with one PUT, as each change's own
+    route would have made them, and the answer is the whole step again."""
+    body = {
+        "entity_id": str(minty.id),
+        "kind": "expense",
+        "template_ids": [str(templates["Food and drink costs"].id)],
+        "accounts": [
+            _row_of(held_list["Cleaning"]),
+            _row_of(held_list["Sundries"], name="Sundries and spares", code="497"),
+            {"code": "496", "name": "Staff meals", "type": "expense", "description": "Lunches"},
+        ],
+    }
+    resp = put(client, auth, "/accounts", body)
+    assert resp.status_code == 200, resp.content
+    answer = resp.json()
+    assert sorted(a["name"] for a in answer["accounts"]["expense"]) == [
+        "Cleaning",
+        "Food and drink costs",
+        "Staff meals",
+        "Sundries and spares",
+    ]
+    assert "slots" in answer and "next_code" in answer, "the whole step, as GET /accounting"
+    state = _expense_state(minty)
+    assert state["Sundries and spares"][0] == "497"
+    assert state["Food and drink costs"][1] == "template"
+    assert state["Staff meals"] == ("496", "user", "Lunches")
+    assert "Repairs" not in state
+    # each change keeps the apps' old readers in step, as its own route does
+    codes = set(
+        EntityBillAccountXero.objects.filter(entity_id=minty.id).values_list(
+            "account_code", flat=True
+        )
+    )
+    assert {"496", "497", "300", "420"} <= codes and not {"498", "499"} & codes
+
+
+@pytest.mark.django_db
+def test_saving_an_unchanged_list_changes_nothing(client, auth, minty, held_list):
+    before = _expense_state(minty)
+    resp = put(
+        client,
+        auth,
+        "/accounts",
+        {
+            "entity_id": str(minty.id),
+            "kind": "expense",
+            "template_ids": [],
+            "accounts": [_row_of(r) for r in held_list.values()],
+        },
+    )
+    assert resp.status_code == 200
+    assert _expense_state(minty) == before
+
+
+@pytest.mark.django_db
+def test_leaving_out_a_used_account_refuses_the_whole_save(client, auth, minty, held_list):
+    """D1/D2: a used account is never deleted. The refusal is today's sentence, and nothing else the
+    save held is written."""
+    EntityPettycashSettings.objects.filter(entity_id=minty.id).update(
+        discrepancy_account_id=held_list["Repairs"]["id"]
+    )
+    before = _expense_state(minty)
+    resp = put(
+        client,
+        auth,
+        "/accounts",
+        {
+            "entity_id": str(minty.id),
+            "kind": "expense",
+            "template_ids": [],
+            "accounts": [
+                _row_of(held_list["Cleaning"], name="Cleaning supplies"),
+                {"code": "496", "name": "Staff meals", "type": "expense"},
+            ],
+        },
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"] == (
+        "Repairs is already used in your records or Petty Cash Settings, so it can't be deleted."
+    )
+    assert _expense_state(minty) == before
+
+
+@pytest.mark.django_db
+def test_a_clash_late_in_the_save_undoes_the_changes_before_it(client, auth, minty, held_list):
+    before = _expense_state(minty)
+    resp = put(
+        client,
+        auth,
+        "/accounts",
+        {
+            "entity_id": str(minty.id),
+            "kind": "expense",
+            "template_ids": [],
+            # Repairs left out (removed first), Sundries renamed - then a new row takes Cleaning's code
+            "accounts": [
+                _row_of(held_list["Cleaning"]),
+                _row_of(held_list["Sundries"], name="Odds and ends"),
+                {"code": "420", "name": "Window cleaning", "type": "expense"},
+            ],
+        },
+    )
+    assert resp.status_code == 409
+    assert resp.json()["fields"]["code"] == (
+        "The code 420 is already used by Cleaning. Choose another code."
+    )
+    assert _expense_state(minty) == before
+
+
+@pytest.mark.django_db
+def test_a_row_with_a_bad_field_or_another_lists_type_is_refused(client, auth, minty, held_list):
+    rows = [_row_of(r) for r in held_list.values()]
+    empty = put(
+        client,
+        auth,
+        "/accounts",
+        {
+            "entity_id": str(minty.id),
+            "kind": "expense",
+            "template_ids": [],
+            "accounts": [*rows, {"code": "496", "name": "", "type": "expense"}],
+        },
+    )
+    assert empty.status_code == 400
+    assert empty.json()["fields"]["name"] == "The name is still empty. Add a name to continue."
+    moved = put(
+        client,
+        auth,
+        "/accounts",
+        {
+            "entity_id": str(minty.id),
+            "kind": "expense",
+            "template_ids": [],
+            "accounts": [*rows[1:], _row_of(held_list[rows[0]["name"]], type="sales")],
+        },
+    )
+    assert moved.status_code == 400
+    assert moved.json()["fields"]["type"] == (
+        "That type can't be used for this account. Choose one from the list."
+    )
+    assert (
+        AccountInfo.objects.get(id=rows[0]["id"]).account_type == "expense"
+    ), "nothing written"
+
+
+@pytest.mark.django_db
+def test_another_companys_account_or_a_bad_body_saves_nothing(
+    client, auth, minty, countries, held_list
+):
+    other = Entity.objects.create(name="Elsewhere", country_code="HK", status="onboarding")
+    theirs = AccountInfo.objects.create(
+        entity_id=other.id, name="Rent", type="EXPENSE", code="405", account_type="expense"
+    )
+    before = _expense_state(minty)
+    resp = put(
+        client,
+        auth,
+        "/accounts",
+        {
+            "entity_id": str(minty.id),
+            "kind": "expense",
+            "template_ids": [],
+            "accounts": [
+                {"id": str(theirs.id), "code": "405", "name": "Mine now", "type": "expense"}
+            ],
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "That account isn't in this company. Reload the list and try again."
+    assert AccountInfo.objects.get(id=theirs.id).name == "Rent"
+    assert _expense_state(minty) == before
+    for bad in ({"accounts": "all"}, {"template_ids": None}, {"kind": "assets"}):
+        body = {"entity_id": str(minty.id), "kind": "expense", "template_ids": [], "accounts": []}
+        assert put(client, auth, "/accounts", {**body, **bad}).status_code == 400
+    assert _expense_state(minty) == before
+
+
+@pytest.mark.django_db
+def test_saving_the_list_leaves_xero_and_system_accounts_alone(client, auth, minty, templates):
+    _answer(client, auth, minty)
+    xero = AccountInfo.objects.create(
+        entity_id=minty.id,
+        name="Rent",
+        type="EXPENSE",
+        xero_account_id="g-1",
+        code="469",
+        account_type="expense",
+        record_status="active",
+    )
+    system = AccountInfo.objects.filter(entity_id=minty.id, is_system=True).count()
+    resp = put(
+        client,
+        auth,
+        "/accounts",
+        {"entity_id": str(minty.id), "kind": "expense", "template_ids": [], "accounts": []},
+    )
+    assert resp.status_code == 200
+    assert AccountInfo.objects.filter(id=xero.id).exists()
+    assert AccountInfo.objects.filter(entity_id=minty.id, is_system=True).count() == system
+
+
+@pytest.mark.django_db
+def test_a_cashier_cannot_save_the_list(client, minty, held_list):
+    cashier = User.objects.create(
+        id=str(uuid.uuid4()),
+        email="c2@example.com",
+        username="c2@example.com",
+        password="x",
+        system_role="normal",
+        approved=True,
+    )
+    UserEntity.objects.create(user_id=cashier.id, entity_id=minty.id, role="cashier", approved=True)
+    headers = {"HTTP_AUTHORIZATION": f"Bearer {make_token(cashier.id)}"}
+    before = _expense_state(minty)
+    resp = put(
+        client,
+        headers,
+        "/accounts",
+        {"entity_id": str(minty.id), "kind": "expense", "template_ids": [], "accounts": []},
+    )
+    assert resp.status_code == 403
+    assert _expense_state(minty) == before
+
+
 # ---- 4.5: the five accounts daily closing needs ------------------------------------------------------
 
 
