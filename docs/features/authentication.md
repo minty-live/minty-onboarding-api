@@ -19,8 +19,8 @@ reference ones (`server-time`, `currencies`, `countries`). `OnboardingBearerAuth
   `minty_shared.tokens.session_alive` asks minty-accounts-api (`POST /api/internal/session/touch`,
   at most once a minute per `sid` per process; the ask keeps it alive). Signed out of Minty, or 60
   minutes without activity, is a 401 too, and the wizard sends the person to sign in again. A
-  token with no `sid` passes until it expires; accounts-api unreachable is logged at ERROR and the
-  token honoured (accounts-api's authentication.md section 3.3). When the sign-in has ENDED - the
+  token with no `sid` passes until it expires; accounts-api unreachable is logged at ERROR and
+  (minty-shared v0.9, owner 2026-11-19: "short grace, then refuse") the token is honoured only while that sign-in was confirmed alive in the last 5 minutes, then the request is refused 503 "Minty can't check your sign-in just now. Try again in a minute." (`SessionCheckUnavailableError`) - nobody is signed out by an outage, and a sign-in known to have ended stays ended (accounts-api's authentication.md section 3.3; `core/exceptions.py`). When the sign-in has ENDED - the
   token still valid, or run out too (`minty_shared.tokens.session_ended`, owner 2026-11-19) - the
   401 is `{"error": "Unauthorized", "reason": "session_expired"}` and the wizard says the session
   has expired instead of relaunching quietly; any other 401 carries no reason.
