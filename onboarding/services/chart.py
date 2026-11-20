@@ -9,20 +9,20 @@ them (owner, 2026-11-12): the ones it made (``source`` ``user``), those from its
 and its copies of Minty's starter chart and template contacts (``template`` - Minty's own list,
 ``account_template``, is never touched). Only the hidden system rows daily closing needs stay out.
 
-WITH OR WITHOUT XERO. A company live on Xero gets every change in Xero first - an account or
-contact created there, an edit sent, a delete archived - and nothing changes in Minty when Xero
-says no (its sentence is shown). A company keeping its books in Minty, or disconnected, adds and
-changes its own Minty rows; a row already linked to Xero waits for a reconnect (its change would
-otherwise be lost, or undone by the next sync). Delete is complete when nothing uses it; a used
-account or contact can't be deleted (owner, 2026-11-18: refused, 409, before Xero is told).
+WITH OR WITHOUT XERO (the owner's decisions doc, 2026-11-19). Minty never creates an account in
+Xero (A1): an account added here is Minty's until the matching links it. A contact added while live
+is linked to Xero's contact of its name, else made there as a supplier (C5); offline it is Minty's
+own row and reaches Xero at publish (C1). A row linked to Xero is changed in Xero only: Minty
+refuses its edit and delete (409; the user, 2026-11-19) - Merge stays. Delete is complete when
+nothing uses it; a used account or contact can't be deleted (owner, 2026-11-18: refused, 409).
 
 DELETED, THEN ADDED AGAIN (owner, 2026-11-12): brought back, never a twin. An account added with
 the code, name and type of one the company deleted - or a contact with the name of one - is that
 one: Minty's archived row restored (its module and old-reader rows on again; archived by the old
 rule, before 2026-11-18, or by a merge), or, when the row went
-(nothing used it), the archived Xero copy linked again; set ACTIVE in Xero when it is there. A
-delete marks Minty's copy of the Xero record archived at once, so nothing links to it meanwhile.
-Offline, a row still linked to Xero waits for a reconnect (it would stay archived there).
+(nothing used it), Xero's archived contact of the name linked again as it stands. Minty never
+restores anything in the customer's Xero (C4): one Xero holds archived is asked about at publish
+(contacts) or in Settings (accounts, A3).
 
 NO DUPLICATE CONTACTS. A contact's name is unique in its company among active ones, case and
 inner spaces ignored. A live company's new contact links to the Xero contact of that name when one
@@ -287,7 +287,7 @@ def edit_account(user_id, entity_id, account_id, payload: dict) -> tuple[dict, i
 @_answer
 def delete_account(user_id, entity_id, account_id) -> tuple[dict, int]:
     """The company's own account taken away: deleted. A used one is refused (owner, 2026-11-18); one
-    linked to Xero is deleted in Xero only (the user, 2026-11-19)."""
+    linked to Xero is refused too - it is changed in Xero only (the user, 2026-11-19)."""
     _gate(user_id, entity_id, Permission.COA_DELETE)
     account = _own_account(entity_id, account_id)
     if account.xero_account_id:
@@ -496,7 +496,8 @@ def edit_contact(user_id, entity_id, contact_id, payload: dict) -> tuple[dict, i
 @_answer
 def delete_contact(user_id, entity_id, contact_id) -> tuple[dict, int]:
     """The company's contact taken away: deleted. A used one is refused (owner, 2026-11-18); one
-    linked to Xero is deleted in Xero only (the user, 2026-11-19, as for accounts)."""
+    linked to Xero is refused too - it is changed in Xero only (the user, 2026-11-19, as for
+    accounts)."""
     _gate(user_id, entity_id, Permission.COA_DELETE)
     contact = _own_contact(entity_id, contact_id)
     if contact.xero_contact_id:

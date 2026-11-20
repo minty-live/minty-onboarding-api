@@ -55,8 +55,6 @@ class FakeXero:
         self.sent.append((method, path, body))
         if self.refuse:
             raise xero_client.XeroRefused(self.refuse)
-        if path == "Accounts" and method == "PUT":
-            return {"Accounts": [{"AccountID": "x-acc-1", **body}]}
         if path == "Contacts" and not body["Contacts"][0].get("ContactID"):
             return {"Contacts": [{"ContactID": "x-con-1", "Name": body["Contacts"][0]["Name"]}]}
         return {}
