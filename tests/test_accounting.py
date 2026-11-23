@@ -535,6 +535,26 @@ def test_an_account_from_xero_is_changed_in_xero(client, auth, minty):
 
 
 @pytest.mark.django_db
+def test_a_company_live_on_xero_adds_changes_and_deletes_no_account_here(client, auth, minty):
+    """The user's rule (2026-11-23): while live on Xero, accounts are added and changed in Xero only."""
+    own = _add(client, auth, minty, code="405", name="Rent", type="expense").json()["account"]
+    Entity.objects.filter(id=minty.id).update(xero_org_id="ORG-1", status="connected")
+    said = {"error": ("This company is connected to Xero, so accounts are added and changed in Xero. "
+                      "Make the change there, and Minty follows.")}
+    body = {"entity_id": str(minty.id), "code": "406", "name": "Fuel", "type": "expense"}
+    answers = [
+        _add(client, auth, minty, code="406", name="Fuel", type="expense"),
+        patch(client, auth, f"/accounts/{own['id']}", body),
+        client.delete(f"{BASE}/accounts/{own['id']}?entity_id={minty.id}", **auth),
+        put(client, auth, "/accounts", {"entity_id": str(minty.id), "kind": "expense", "template_ids": [],
+                                        "accounts": []}),
+    ]
+    assert [(a.status_code, a.json()) for a in answers] == [(409, said)] * 4
+    assert list(AccountInfo.objects.filter(entity_id=minty.id, is_system=False).values_list("name", flat=True)) == [
+        "Rent"]
+
+
+@pytest.mark.django_db
 def test_removing_an_unused_account_deletes_it_and_a_used_one_is_refused(
     client, auth, minty, entity
 ):

@@ -10,7 +10,9 @@ and its copies of Minty's starter chart and template contacts (``template`` - Mi
 ``account_template``, is never touched). Only the hidden system rows daily closing needs stay out.
 
 WITH OR WITHOUT XERO (the owner's decisions doc, 2026-11-19). Minty never creates an account in
-Xero (A1): an account added here is Minty's until the matching links it. A contact added while live
+Xero (A1): an account added here is Minty's until the matching links it. While the company is live
+on Xero no account is added, changed or deleted here at all - the chart is Xero's, and the sync
+brings it (409 ``ACCOUNTS_IN_XERO``; the user, 2026-11-23); contacts are unaffected. A contact added while live
 is linked to Xero's contact of its name, else made there as a supplier (C5); offline it is Minty's
 own row and reaches Xero at publish (C1). A row linked to Xero is changed in Xero only: Minty
 refuses its edit and delete (409; the user, 2026-11-19) - Merge stays. Delete is complete when
@@ -69,6 +71,8 @@ FROM_XERO = "This account comes from Xero. Change it in Xero, and Minty follows.
 #: The same for contacts (the user, 2026-11-19).
 CONTACT_FROM_XERO = "This contact comes from Xero. Change it in Xero, and Minty follows."
 UNANSWERED = {"error": "Xero didn't answer just now. Mind trying again in a moment?"}
+#: The user's rule (2026-11-23): while live on Xero, the chart is Xero's to change.
+ACCOUNTS_IN_XERO = {"error": accounting.ACCOUNTS_IN_XERO}
 CONTACT_MAX = 150
 
 #: The company's to edit and delete: every source - its copies of Minty's too (owner, 2026-11-12).
@@ -101,6 +105,12 @@ def _xero(entity: Entity) -> str | None:
     if token is None:
         raise _Stop(RECONNECT, 409)
     return token
+
+
+def _not_live(entity: Entity, answer: dict) -> None:
+    """Refused while the company is live on Xero (the user, 2026-11-23): Xero's to change."""
+    if xero_connected(entity):
+        raise _Stop(answer, 409)
 
 
 def _send(token, entity: Entity, method: str, path: str, body: dict) -> dict:
@@ -245,6 +255,7 @@ def add_account(user_id, entity_id, payload: dict) -> tuple[dict, int]:
     Xero (owner's decisions doc A1, 2026-11-19): it is mapped to a Xero account on the matching
     screen."""
     entity = _gate(user_id, entity_id, Permission.COA_CREATE)
+    _not_live(entity, ACCOUNTS_IN_XERO)  # live on Xero: added in Xero (the user, 2026-11-23)
     template = None
     if payload.get("template_id"):
         template = next((row for row in _minty_offers(entity) if str(row.id) == str(payload["template_id"])), None)
@@ -274,6 +285,7 @@ def edit_account(user_id, entity_id, account_id, payload: dict) -> tuple[dict, i
     """The company's own account changed. One linked to Xero is changed in Xero only (the user,
     2026-11-19, with the owner's decisions doc A1: accounts flow from Xero to Minty)."""
     entity = _gate(user_id, entity_id, Permission.COA_UPDATE)
+    _not_live(entity, ACCOUNTS_IN_XERO)  # live on Xero: changed in Xero (the user, 2026-11-23)
     account = _own_account(entity_id, account_id)
     if account.xero_account_id:
         raise _Stop({"error": FROM_XERO}, 409)
@@ -288,7 +300,8 @@ def edit_account(user_id, entity_id, account_id, payload: dict) -> tuple[dict, i
 def delete_account(user_id, entity_id, account_id) -> tuple[dict, int]:
     """The company's own account taken away: deleted. A used one is refused (owner, 2026-11-18); one
     linked to Xero is refused too - it is changed in Xero only (the user, 2026-11-19)."""
-    _gate(user_id, entity_id, Permission.COA_DELETE)
+    # live on Xero: changed in Xero (the user, 2026-11-23)
+    _not_live(_gate(user_id, entity_id, Permission.COA_DELETE), ACCOUNTS_IN_XERO)
     account = _own_account(entity_id, account_id)
     if account.xero_account_id:
         raise _Stop({"error": FROM_XERO}, 409)

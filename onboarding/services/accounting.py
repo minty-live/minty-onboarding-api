@@ -745,14 +745,23 @@ def _assign(entity_id, role, account: AccountInfo | None) -> dict:
     return {}
 
 
+#: The user's rule (2026-11-23): while live on Xero, accounts are added and changed in Xero only -
+#: here and in Settings (``chart``).
+ACCOUNTS_IN_XERO = ("This company is connected to Xero, so accounts are added and changed in Xero. "
+                    "Make the change there, and Minty follows.")
+LIVE_ON_XERO = {"error": ACCOUNTS_IN_XERO}
+
+
 def create_account(user_id, entity_id, payload: dict) -> tuple[dict, int]:
     """Add one account (4.3b, 4.4, 4.5a's "Create a new account"). With ``role``, it is also chosen
-    for that daily-closing account."""
+    for that daily-closing account. Refused while live on Xero."""
     if not has_permission_by_user_id(user_id, Permission.COA_CREATE, entity_id):
         return DENIED, 403
     entity = _entity(entity_id)
     if entity is None:
         return NOT_FOUND, 404
+    if xero_connected(entity):
+        return LIVE_ON_XERO, 409
     role = payload.get("role")
     if role is not None and role not in SLOTS:
         return {"error": "Choose which daily-closing account this is for."}, 400
@@ -792,12 +801,15 @@ def _own(entity_id, account_id) -> AccountInfo | None:
 
 
 def update_account(user_id, entity_id, account_id, payload: dict) -> tuple[dict, int]:
-    """4.4a: one account's code, name, type and description. Accounts from Xero change in Xero."""
+    """4.4a: one account's code, name, type and description. Accounts from Xero change in Xero, and
+    while live on Xero every account does."""
     if not has_permission_by_user_id(user_id, Permission.COA_UPDATE, entity_id):
         return DENIED, 403
     entity = _entity(entity_id)
     if entity is None:
         return NOT_FOUND, 404
+    if xero_connected(entity):
+        return LIVE_ON_XERO, 409
     account = _own(entity_id, account_id)
     if account is None:
         return {"error": "That account isn't in this company. Reload the list and try again."}, 404
@@ -839,11 +851,15 @@ def _apply_update(entity: Entity, account: AccountInfo, clean: dict) -> None:
 
 
 def delete_account(user_id, entity_id, account_id) -> tuple[dict, int]:
-    """Untick an account: deleted when nothing uses it, else refused (``USED_ACCOUNT``)."""
+    """Untick an account: deleted when nothing uses it, else refused (``USED_ACCOUNT``). Refused
+    while live on Xero."""
     if not has_permission_by_user_id(user_id, Permission.COA_DELETE, entity_id):
         return DENIED, 403
-    if _entity(entity_id) is None:
+    entity = _entity(entity_id)
+    if entity is None:
         return NOT_FOUND, 404
+    if xero_connected(entity):
+        return LIVE_ON_XERO, 409
     account = _own(entity_id, account_id)
     if account is None:
         return {"error": "That account isn't in this company. Reload the list and try again."}, 404
@@ -893,7 +909,8 @@ def save_accounts(user_id, entity_id, kind, template_ids, rows) -> tuple[dict, i
     ``apply_autofill``; one already there is left alone). Every Minty-made account of the kind left
     out is removed as ``delete_account`` removes it: a used one refuses the whole save
     (``USED_ACCOUNT``). The shared system rows and the accounts from Xero are not the screen's and
-    are left alone. Any refusal writes nothing. Answers the whole step (``setup``)."""
+    are left alone. Any refusal writes nothing - and while live on Xero it is refused whole. Answers
+    the whole step (``setup``)."""
     if not has_permission_by_user_id(user_id, Permission.COA_UPDATE, entity_id):
         return DENIED, 403
     if kind not in KINDS:
@@ -907,6 +924,8 @@ def save_accounts(user_id, entity_id, kind, template_ids, rows) -> tuple[dict, i
     entity = _entity(entity_id)
     if entity is None:
         return NOT_FOUND, 404
+    if xero_connected(entity):
+        return LIVE_ON_XERO, 409
     own = {
         str(a.id): a
         for a in _active(entity_id)

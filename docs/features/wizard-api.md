@@ -284,8 +284,14 @@ claims `entity_id` and `user_id`; anything else 401). The person's rights are ch
 - **Minty's accounts** (owner, 2026-11-12): the read's `minty_accounts` are the starter chart
   (`account_template`) for the company's country, every business type's, one per name, less the
   hidden system rows and any the company has; `POST {template_id}` adds one as Minty's copy
-  (`accounting._from_template`: its module and daily-closing defaults, as Auto Fill) - in Xero
-  first when live; a code already taken is refused (409), one no longer offered is 404.
+  (`accounting._from_template`: its module and daily-closing defaults, as Auto Fill); a code
+  already taken is refused (409), one no longer offered is 404.
+- **Live on Xero, no account is added, changed or deleted here** (the user, 2026-11-23): while
+  `xero_connected`, `chart.add_account` / `edit_account` / `delete_account` and the wizard's
+  `POST`/`PATCH`/`DELETE`/`PUT /accounting/accounts` answer 409 "This company is connected to Xero,
+  so accounts are added and changed in Xero. Make the change there, and Minty follows." with no Xero
+  call. The reads still carry the role's `permissions`; the page reads `xero_live` to hide the
+  buttons. Merge (accounts-api's) stays. Contacts are unaffected (below).
 - **With or without Xero.** A company live on Xero (`xero_connected` + a token) gets each change in
   Xero first - `PUT /Accounts`, `POST /Accounts/{id}` (an edit, or `Status: ARCHIVED`), `POST
   /Contacts` (a new one, a rename or `ContactStatus: ARCHIVED`); Xero's refusal is a sentence
@@ -330,8 +336,9 @@ a company `connected` (only matching does, once its accounts and suppliers are i
 
 ## Accounts stay in Minty (the owner's decisions doc A1, A3, C4, 2026-11-19)
 
-- **A1**: adding an account (Settings' General, `chart.add_account`) never creates it in Xero - it is mapped
-  on the matching screen. Xero's archived account of the same code and name is neither restored nor linked.
+- **A1**: an account added while Xero is off (Settings' General, `chart.add_account`) is never created in
+  Xero - it is mapped on the matching screen. Xero's archived account of the same code and name is neither
+  restored nor linked. While live, no account is added here at all (the user, 2026-11-23).
 - **Linked accounts are changed in Xero only** (the user, 2026-11-19): `chart.edit_account` /
   `delete_account` refuse an account with a Xero id - 409 "This account comes from Xero. Change it in Xero,
   and Minty follows."
