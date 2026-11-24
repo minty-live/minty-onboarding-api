@@ -152,6 +152,8 @@ def _account_row(account: AccountInfo, used: bool) -> dict:
     row = accounting._row(account, used)
     row["own"] = account.source in OWNED and not account.is_system
     row["in_xero"] = bool(account.xero_account_id)
+    # Minty Code + Xero Code (the user, 2026-11-24): ``code`` is Minty's; Xero's only once linked
+    row["xero_code"] = (account.xero_code or "").strip() if account.xero_account_id else ""
     # the owner's decisions doc A3 (2026-11-19): a linked account Xero archived or removed - the sync
     # leaves a used one ARCHIVED here - is asked about in Settings: map it to an account Xero has
     row["gone_from_xero"] = bool(account.xero_account_id) and (account.status or "").upper() != "ACTIVE"

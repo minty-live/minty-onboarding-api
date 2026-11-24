@@ -279,8 +279,9 @@ claims `entity_id` and `user_id`; anything else 401). The person's rights are ch
 - **Who owns what.** Every row is the company's own copy, so any is edited or deleted (owner,
   2026-11-12): `source` `user`, `xero`, and `template` (its copies of Minty's starter chart and
   template contacts; Minty's `account_template` is never touched). Only the hidden system rows stay
-  out. The read marks each row `own`, `source`, `in_xero`, `used`; it also sends the types and each
-  type's next free code (`minty_shared.accounts`).
+  out. The read marks each row `own`, `source`, `in_xero`, `used`, and carries both codes (the user,
+  2026-11-24 - Minty Code + Xero Code): `code` is Minty's, `xero_code` Xero's once the account is linked
+  (empty otherwise); it also sends the types and each type's next free code (`minty_shared.accounts`).
 - **Minty's accounts** (owner, 2026-11-12): the read's `minty_accounts` are the starter chart
   (`account_template`) for the company's country, every business type's, one per name, less the
   hidden system rows and any the company has; `POST {template_id}` adds one as Minty's copy
@@ -291,7 +292,8 @@ claims `entity_id` and `user_id`; anything else 401). The person's rights are ch
   `POST`/`PATCH`/`DELETE`/`PUT /accounting/accounts` answer 409 "This company is connected to Xero,
   so accounts are added and changed in Xero. Make the change there, and Minty follows." with no Xero
   call. The reads still carry the role's `permissions`; the page reads `xero_live` to hide the
-  buttons. Merge (accounts-api's) stays. Contacts are unaffected (below).
+  buttons. Accounts are never merged (the user, 2026-11-24); contacts keep accounts-api's Merge.
+  Contacts are unaffected (below).
 - **With or without Xero.** A company live on Xero (`xero_connected` + a token) gets each change in
   Xero first - `PUT /Accounts`, `POST /Accounts/{id}` (an edit, or `Status: ARCHIVED`), `POST
   /Contacts` (a new one, a rename or `ContactStatus: ARCHIVED`); Xero's refusal is a sentence

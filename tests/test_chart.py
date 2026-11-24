@@ -514,3 +514,15 @@ def test_xeros_archived_account_of_that_code_is_never_restored_a_new_minty_one_i
     assert again.status_code == 201, again.json()
     assert AccountInfo.objects.get(entity_id=disconnected.id, name="Spare").xero_account_id is None
     assert XeroAccount.objects.get(xero_guid="x-spare").status == "ARCHIVED"
+
+
+@pytest.mark.django_db
+def test_each_account_carries_its_minty_code_and_its_xero_code(client, user, live):
+    """The user, 2026-11-24 (Minty Code + Xero Code): Settings lists both. An account not linked to
+    Xero has no Xero code, whatever its old copy column says."""
+    AccountInfo.objects.create(entity_id=live.id, name="Rent", code="6100", xero_code="469", account_type="expense",
+                               type="EXPENSE", status="ACTIVE", source="user", xero_account_id="x-rent")
+    account(live, "Own", "6200")
+    rows = {a["name"]: (a["code"], a["xero_code"])
+            for a in call(client, user, live, "get", "/accounts").json()["accounts"]}
+    assert rows == {"Rent": ("6100", "469"), "Own": ("6200", "")}
