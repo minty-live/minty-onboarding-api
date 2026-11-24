@@ -60,6 +60,10 @@ never a real one (see "Never let a test navigate to step 9" below).
 - [ ] A valid business email is stored and **not** rewritten by a later edit that omits it.
 - [ ] `PUT /entity/{id}` on an entity that is no longer `onboarding` is refused (can't edit a
       live company through this route).
+- [ ] With Xero linked (org held, not `disconnected`): a different currency → 409 "This company
+      is connected to Xero, so its currency stays the same as Xero's. To change it, disconnect
+      Xero first."; the same currency → 200; a country change keeps the currency; `GET /state`'s
+      `entity.currency_locked` is true. Disconnected (org kept) → editable, `currency_locked` false.
 
 ## Petty-cash setup
 

@@ -68,7 +68,7 @@ before). **Names need not be unique** (owner, 2026-11-16, as in Xero: a company 
 name a label; it was unique per person from 2026-11-03 and across every customer before):
 create and rename never refuse a name another company already has, the acting user's own
 included. Create still resumes an in-progress (`onboarding`, unarchived) company of the same
-name and member rather than making a twin (below). `PUT /entity/{id}` does not require a country or currency (a partial edit stays valid). Country and currency
+name and member rather than making a twin (below). `PUT /entity/{id}` does not require a country or currency (a partial edit stays valid). **While Xero is linked the currency is locked** (2026-11-24; `xero_lists.xero_connected`: an organisation held and not `disconnected`, so a disconnected company or one mid-matching is not locked): a different currency is a 409 `"This company is connected to Xero, so its currency stays the same as Xero's. To change it, disconnect Xero first."` (`CURRENCY_LOCKED`, accounts-api's Settings sentence), the same one sent back is fine, and a country change keeps the currency (no derivation, no denomination swap). `GET /state`'s `entity.currency_locked` says so for Step 1. accounts-api's connect refuses an organisation whose currency isn't the company's. Country and currency
 are **resolved against the registries** (`resolve.country_code` accepts alpha-2, alpha-3
 or a unique name; `currency_id` only queries once the value is a uuid) and never stored
 unvalidated — they are foreign keys; phone and email are checked the way the wizard does.

@@ -46,6 +46,7 @@ from onboarding.services import accounting, sales_methods
 from onboarding.services import invites as invites_service
 from onboarding.services import steps as step_defs
 from onboarding.services.plans import MODULE_BILL, MODULE_CODES, MODULE_PETTY_CASH
+from onboarding.services.xero_lists import xero_connected
 
 logger = logging.getLogger("minty-onboarding")
 
@@ -230,6 +231,9 @@ def get_onboarding_state(user_id, entity: Entity) -> dict:
             # a string, and the wizard submits this value straight back.
             "country": entity.country_code or "",
             "currency": str(entity.currency_id) if entity.currency_id else "",
+            # True while Xero is linked: Step 1 shows the currency as fixed (2026-11-24; the
+            # update refuses a change, api_entity.CURRENCY_LOCKED).
+            "currency_locked": xero_connected(entity),
             # Optional Step 1 contact details. ALWAYS PRESENT, as "" when unset, so the
             # wizard can tell "the server has no value" from "the server didn't send the
             # field" -- its rehydration keys off presence, and an empty value is legitimate.

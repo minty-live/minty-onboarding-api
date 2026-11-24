@@ -699,6 +699,75 @@ def test_create_does_not_set_currency_format(client, auth, countries, currencies
 
 
 # ---------------------------------------------------------------------------
+# The currency is locked while Xero is connected (2026-11-24): Xero can't change an
+# organisation's currency, and the connect checked the two match.
+# ---------------------------------------------------------------------------
+LOCKED = (
+    "This company is connected to Xero, so its currency stays the same as Xero's. "
+    "To change it, disconnect Xero first."
+)
+
+
+def _linked(entity, currency, status="onboarding"):
+    entity.xero_org_id = str(uuid.uuid4())
+    entity.status = status
+    entity.currency_id = currency.id
+    entity.save()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("status", ["onboarding", "connected"])
+def test_a_linked_company_s_currency_cannot_change(
+    client, auth, entity, currencies, cash_catalogue, modules, status
+):
+    _linked(entity, currencies["HKD"], status)
+    resp = put_entity(client, auth, entity.id, currency_id="JPY")
+    assert resp.status_code == 409
+    assert resp.json() == {"error": LOCKED}
+    entity.refresh_from_db()
+    assert str(entity.currency_id) == str(currencies["HKD"].id)
+    assert not EntityCashSetting.objects.filter(
+        entity_id=entity.id, cash_id__in=[c.id for c in cash_catalogue["JPY"]]
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_a_linked_company_may_resend_its_own_currency(client, auth, entity, currencies, modules):
+    _linked(entity, currencies["HKD"])
+    resp = put_entity(client, auth, entity.id, currency_id="HKD", contact_phone="")
+    assert resp.status_code == 200
+    entity.refresh_from_db()
+    assert str(entity.currency_id) == str(currencies["HKD"].id)
+
+
+@pytest.mark.django_db
+def test_a_linked_company_s_country_change_keeps_its_currency(
+    client, auth, entity, countries, currencies, modules
+):
+    """A country normally brings its own currency; while linked it doesn't."""
+    from minty_db.models import CountryInfo
+
+    CountryInfo.objects.filter(country_code="AU").update(currency_id=currencies["JPY"].id)
+    _linked(entity, currencies["HKD"])
+    resp = put_entity(client, auth, entity.id, country_id="AU")
+    assert resp.status_code == 200
+    entity.refresh_from_db()
+    assert entity.country_code == "AU"
+    assert str(entity.currency_id) == str(currencies["HKD"].id)
+
+
+@pytest.mark.django_db
+def test_a_disconnected_company_keeping_its_org_can_change_currency(
+    client, auth, entity, currencies, modules
+):
+    """A disconnect (or a matching in progress) keeps the organisation: not locked."""
+    _linked(entity, currencies["HKD"], status="disconnected")
+    assert put_entity(client, auth, entity.id, currency_id="JPY").status_code == 200
+    entity.refresh_from_db()
+    assert str(entity.currency_id) == str(currencies["JPY"].id)
+
+
+# ---------------------------------------------------------------------------
 # Cash denominations follow the currency
 # ---------------------------------------------------------------------------
 def cash_ids(entity_id):

@@ -22,6 +22,14 @@ ASYMMETRY WORTH KNOWING: both derive a currency from the country when none is gi
 the update sets ``currency_format`` from the currency's symbol. That is Flask's behaviour,
 ported as-is rather than tidied. Create also REQUIRES a country and a currency (2026-10-19);
 the update does not, so a partial edit without a country stays valid.
+
+THE CURRENCY IS LOCKED WHILE XERO IS LINKED (2026-11-24)
+
+Xero can't change an organisation's currency, and the connect refuses an organisation whose
+currency isn't the company's. So while the company holds an organisation and isn't disconnected
+(``xero_lists.xero_connected``), a different currency is a 409 (``CURRENCY_LOCKED``, the same
+sentence as accounts-api's Settings) and a country change keeps the currency it has. A
+disconnected company, or one mid-matching, is not locked.
 """
 
 import logging
@@ -31,12 +39,13 @@ from minty_db.models import CountryInfo, CurrencyInfo
 from minty_shared.time import country_timezone
 from ninja import Body, Router, Schema, Status
 
-from core.exceptions import AccessDeniedError, OnboardingValidationError
+from core.exceptions import AccessDeniedError, ConflictError, OnboardingValidationError
 from core.permissions import entity_for_member, require_entity_id
 from core.policy import Permission, has_permission_by_user_id
 from onboarding.services import resolve
 from onboarding.services.cash_settings import sync_cash_settings
 from onboarding.services.entity_create import create_entity_for_user
+from onboarding.services.xero_lists import xero_connected
 
 logger = logging.getLogger("minty-onboarding")
 
@@ -45,6 +54,12 @@ entity_router = Router()
 #: Max length of entities.name, on create and rename. The wizard's live check (Step 1 says so
 #: as it is typed and holds Save & Next) is a convenience; this is a plain JSON endpoint.
 NAME_MAX = 100
+
+#: A currency change while Xero is linked (2026-11-24). accounts-api's Settings says the same.
+CURRENCY_LOCKED = (
+    "This company is connected to Xero, so its currency stays the same as Xero's. "
+    "To change it, disconnect Xero first."
+)
 
 
 class CreateEntityIn(Schema):
@@ -222,10 +237,20 @@ def update_entity(request, entity_id: str, payload: dict = Body(default={})):
     )
     currency = _resolved_currency(raw_currency)
 
-    # An explicit currency wins; otherwise the country's registry currency is derived. The
-    # dropdowns show names but carry these values, and deriving means picking a country
-    # alone still leaves the company with a currency.
-    if not currency and country:
+    if xero_connected(entity):
+        # Locked: the same currency may be sent back, a different one is refused, and a country
+        # change brings nothing (see the module header).
+        current = str(entity.currency_id) if entity.currency_id else ""
+        if currency and currency != current:
+            logger.warning(
+                "onboarding: entity %s currency change refused, Xero is linked", entity_id
+            )
+            raise ConflictError(CURRENCY_LOCKED)
+        currency = ""
+    elif not currency and country:
+        # An explicit currency wins; otherwise the country's registry currency is derived. The
+        # dropdowns show names but carry these values, and deriving means picking a country
+        # alone still leaves the company with a currency.
         currency = _country_currency(country)
 
     if currency:

@@ -351,7 +351,7 @@ def test_contact_fields_are_always_present_as_empty_strings(client, auth, entity
     body = state_of(client, auth, entity)["entity"]
     assert body["phone"] == ""
     assert body["email"] == ""
-    assert set(body) == {"name", "country", "currency", "phone", "email"}
+    assert set(body) == {"name", "country", "currency", "currency_locked", "phone", "email"}
 
 
 @pytest.mark.django_db
@@ -371,6 +371,27 @@ def test_currency_is_a_string_not_a_uuid_object(client, auth, entity, modules, c
 @pytest.mark.django_db
 def test_currency_is_empty_string_when_unset(client, auth, entity, modules):
     assert state_of(client, auth, entity)["entity"]["currency"] == ""
+
+
+@pytest.mark.django_db
+def test_currency_is_unlocked_without_xero(client, auth, entity, modules):
+    assert state_of(client, auth, entity)["entity"]["currency_locked"] is False
+
+
+@pytest.mark.django_db
+def test_currency_is_locked_once_xero_is_linked(client, auth, entity, modules, xero_unverifiable):
+    """Step 1 shows the currency as fixed once the wizard has linked Xero."""
+    entity.xero_org_id = str(uuid.uuid4())
+    entity.save()
+    assert state_of(client, auth, entity)["entity"]["currency_locked"] is True
+
+
+@pytest.mark.django_db
+def test_currency_is_unlocked_while_disconnected(client, auth, entity, modules, xero_unverifiable):
+    entity.xero_org_id = str(uuid.uuid4())
+    entity.status = "disconnected"
+    entity.save()
+    assert state_of(client, auth, entity)["entity"]["currency_locked"] is False
 
 
 # ---------------------------------------------------------------------------
