@@ -39,6 +39,8 @@ PORTED = {
     "GET /sales-methods",
     "POST /sales-methods",
     "POST /opening-balance",
+    # Skip for now (2026-11-26): the balance stays not set; the first petty cash report asks
+    "POST /opening-balance/skip",
     # Group D2 -- the Xero lists, ported 2026-11-06 (Phase 4 of the Flask retirement); their Xero
     # and sync calls go through core/xero_client.py, the token through core/xero_tokens.py.
     "GET /account-codes",
@@ -222,8 +224,9 @@ def test_the_whole_flask_surface_is_answered():
     32 -> 33 on 2026-11-17: ``POST /accounting/sales-accounts``, the sales accounts screen. 33 -> 35
     on 2026-11-18: ``GET``/``POST /petty-cash-codes``, Petty Cash Settings' Account Code. 35 -> 36
     on 2026-11-20: ``PUT /accounting/accounts``, 4.4's Save & Next (the whole held list at once).
+    36 -> 37 on 2026-11-26: ``POST /opening-balance/skip``, step 5's "Skip for now" (the user).
     """
-    assert len(PORTED) == 36
+    assert len(PORTED) == 37
     assert len(PROXIED) == 17
-    assert len(EXPECTED) == 53
+    assert len(EXPECTED) == 54
     assert set(_operations()) == EXPECTED

@@ -118,6 +118,13 @@ account shares it. Blank means the payer's own address is used instead.
   400. A **blank amount is refused, not saved as 0** (2026-10-26): no amount key, `null`, `""`
   or whitespace is 400 `"The opening balance is still empty. Add the amount to continue."`
   (the wizard skips the call while its field is blank). Flask's fallback (`save_opening_balance`) does the same.
+  A save also clears `opening_skipped_at`.
+- `POST /opening-balance/skip` (2026-11-26, the user) — step 5's "Skip for now": the balance stays
+  **not set** (`opening_balance` / `start_date` NULL, never 0) and `entity_pettycash_settings.opening_skipped_at`
+  (minty-db v0.20) records the skip, under a row lock. `{skipped: true}`; a company that already has
+  a balance keeps it and gets `{skipped: false}`. `GET /state` carries `opening_skipped`, and step 5
+  counts as done when the balance is saved **or** skipped, so the wizard resumes past it. The first
+  petty cash report then asks for the date and the amount (minty-petty-cash-api `PUT /opening-balance`).
 - `GET/POST /account-codes`, `POST /contacts`, `POST /contacts/create` (a new Xero
   contact), `GET/POST /bill-codes` — the expense accounts, the petty-cash contact mapping
   and the bills' account codes (`services/xero_lists.py`; ported from Flask 2026-11-06, Phase

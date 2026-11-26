@@ -210,8 +210,11 @@ def get_onboarding_state(user_id, entity: Entity) -> dict:
     xero = _xero_state(setup)
     if entity.setup_mode:
         # Step 4 chooses the accounts now (2026-11-11), so Petty Cash's own step (5) is done once
-        # its opening balance is saved.
-        account_codes_done = setup is not None and setup.start_date is not None
+        # its opening balance is saved - or skipped (2026-11-26: it then stays not set, and the
+        # first petty cash report asks for it).
+        account_codes_done = setup is not None and (
+            setup.start_date is not None or setup.opening_skipped_at is not None
+        )
     else:
         account_codes_done = _account_codes_done(entity.id)
     current_step = derive_current_step(entity, modules, xero, account_codes_done)
@@ -247,6 +250,8 @@ def get_onboarding_state(user_id, entity: Entity) -> dict:
         "accounting": accounting.answers(entity),
         "sales_methods": _sales_methods_state(entity.id),
         "opening_balance": _opening_balance_state(setup),
+        # "Skip for now" was pressed and no balance is saved since (2026-11-26).
+        "opening_skipped": bool(setup is not None and setup.opening_skipped_at is not None),
         # Best-effort: a permission gap must not fail the whole resume read. See
         # services/invites.py::list_pending_best_effort.
         "invites": invites_service.list_pending_best_effort(user_id, entity.id),

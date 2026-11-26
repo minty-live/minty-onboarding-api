@@ -51,6 +51,10 @@ class SalesMethodsIn(Schema):
     delivery: list[str] = []
 
 
+class EntityIn(Schema):
+    entity_id: str = ""
+
+
 class OpeningBalanceIn(Schema):
     entity_id: str = ""
     # Flask accepts either key for each value. ``opening_date`` and ``cash_addition`` are
@@ -101,6 +105,14 @@ def post_opening_balance(request, payload: OpeningBalanceIn):
     return opening_service.save_opening_balance(
         request.auth_user_id, payload.entity_id, date_value, amount
     )
+
+
+@pettycash_router.post("/opening-balance/skip")
+def post_opening_balance_skip(request, payload: EntityIn):
+    """"Skip for now" (the user, 2026-11-26): the balance stays not set - the first petty cash
+    report asks for it - and the wizard resumes past step 5. See services/opening_balance.py."""
+    entity_for_member(request.auth_user_id, payload.entity_id)
+    return opening_service.skip_opening_balance(request.auth_user_id, payload.entity_id)
 
 
 # ---------------------------------------------------------------------------

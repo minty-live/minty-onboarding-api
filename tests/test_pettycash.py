@@ -561,6 +561,60 @@ def test_opening_balance_requires_membership(client, other_user, entity):
     assert resp.status_code == 403
 
 
+# "Skip for now" on the Opening Balance step (the user, 2026-11-26): the balance stays NOT SET
+# (NULL, never 0) and the first petty cash report asks for it; opening_skipped_at remembers the
+# skip so the wizard resumes past step 5. A saved balance is never cleared by a skip, and clears
+# the mark.
+SKIP = "/api/onboarding/opening-balance/skip"
+
+
+def _open_today(client, auth, entity, amount):
+    payload = {"entity_id": entity.id, "opening_date": date.today().isoformat()}
+    return post_json(client, auth, OPENING, {**payload, "cash_addition": amount})
+
+
+@pytest.mark.django_db
+def test_skipping_leaves_the_balance_not_set_and_remembers_the_skip(client, auth, entity):
+    resp = post_json(client, auth, SKIP, {"entity_id": entity.id})
+    assert resp.status_code == 200
+    assert resp.json() == {"skipped": True}
+    row = _settings(entity)
+    assert row.opening_skipped_at is not None
+    assert row.opening_balance is None and row.start_date is None
+
+
+@pytest.mark.django_db
+def test_a_skip_never_clears_a_saved_balance(client, auth, entity):
+    assert _open_today(client, auth, entity, 0).status_code == 200
+    resp = post_json(client, auth, SKIP, {"entity_id": entity.id})
+    assert resp.status_code == 200
+    assert resp.json() == {"skipped": False}
+    row = _settings(entity)
+    assert row.opening_balance == Decimal("0.00") and row.start_date == date.today()
+    assert row.opening_skipped_at is None
+
+
+@pytest.mark.django_db
+def test_saving_a_balance_after_a_skip_clears_the_mark(client, auth, entity):
+    post_json(client, auth, SKIP, {"entity_id": entity.id})
+    assert _open_today(client, auth, entity, 250).status_code == 200
+    row = _settings(entity)
+    assert row.opening_skipped_at is None
+    assert row.opening_balance == Decimal("250.00")
+
+
+@pytest.mark.django_db
+def test_skipping_requires_membership(client, other_user, entity):
+    resp = client.post(
+        SKIP,
+        {"entity_id": entity.id},
+        content_type="application/json",
+        HTTP_AUTHORIZATION=f"Bearer {make_token(other_user.id)}",
+    )
+    assert resp.status_code == 403
+    assert _settings(entity) is None
+
+
 # ---------------------------------------------------------------------------
 # D2 -- the proxies. About forwarding, not about Xero.
 # ---------------------------------------------------------------------------

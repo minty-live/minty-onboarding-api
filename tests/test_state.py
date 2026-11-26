@@ -201,6 +201,27 @@ def test_petty_cash_with_its_opening_balance_and_no_bill_lands_on_invite(
 
 
 @pytest.mark.django_db
+def test_a_skipped_opening_balance_resumes_past_petty_cash_and_says_so(
+    client, auth, entity, enable_module, xero_unverifiable
+):
+    """Skip for now (the user, 2026-11-26): the balance stays not set, but step 5 is done."""
+    from django.utils import timezone
+
+    enable_module(entity, "PETTY_CASH")
+    Entity.objects.filter(id=entity.id).update(setup_mode="minty", uses_sales_cash=True)
+    state = state_of(client, auth, entity)
+    assert state["current_step"] == step_defs.STEP_SALES
+    assert state["opening_skipped"] is False
+    EntityPettycashSettings.objects.create(
+        entity_id=entity.id, opening_skipped_at=timezone.now()
+    )
+    state = state_of(client, auth, entity)
+    assert state["current_step"] == step_defs.STEP_INVITE
+    assert state["opening_skipped"] is True
+    assert state["opening_balance"] is None
+
+
+@pytest.mark.django_db
 def test_bill_module_lands_on_bills(client, auth, entity, enable_module, xero_unverifiable):
     enable_module(entity, "PAYMENT_REQUEST")
     entity.xero_org_id = str(uuid.uuid4())
@@ -626,6 +647,8 @@ def test_the_response_carries_flasks_keys_and_no_others(client, auth, entity, mo
 
     2026-11-10: accounting (step 4's answers with Xero optional: the mode, the business type,
     the cash question) - the wizard resumes step 4 from it, and Flask never had that step.
+    2026-11-26: opening_skipped (step 5's "Skip for now", the user) - the wizard takes step 5 as
+    done without a balance; Flask never had a skip.
     """
     flask_keys = {
         "accounting",
@@ -639,6 +662,7 @@ def test_the_response_carries_flasks_keys_and_no_others(client, auth, entity, mo
         "xero",
         "sales_methods",
         "opening_balance",
+        "opening_skipped",
         "invites",
     }
     assert set(state_of(client, auth, entity)) == flask_keys

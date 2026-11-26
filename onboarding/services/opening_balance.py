@@ -24,6 +24,13 @@ A missing, empty or whitespace amount is refused (400), not saved as 0: the wiza
 call while the field is blank, so a blank that arrives is a missing amount, and a 0 would open
 the first report at nothing without anyone having typed it.
 
+SKIP FOR NOW (the user, 2026-11-26)
+
+The step may be skipped: the balance then stays NOT SET (both columns NULL - never 0) and the
+company's first petty cash report asks for it (petty-cash-api ``PUT /opening-balance``).
+``opening_skipped_at`` remembers the skip so the wizard resumes past step 5; a skip never clears
+a saved balance, and a saved balance clears the mark.
+
 NO SEVEN-DAY WINDOW
 
 A user can pick any past date. Only future dates are refused, and that boundary is Hong Kong
@@ -37,7 +44,9 @@ from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from minty_db.models import CurrencyInfo, Entity, EntityPettycashSettings, Report
 
 from core.exceptions import AccessDeniedError, ConflictError, OnboardingValidationError
@@ -123,7 +132,8 @@ def save_opening_balance(user_id, entity_id: str, start_date, amount) -> dict:
     row, created = EntityPettycashSettings.objects.get_or_create(entity_id=entity_id)
     row.opening_balance = value
     row.start_date = start
-    row.save(update_fields=["opening_balance", "start_date"])
+    row.opening_skipped_at = None  # a saved balance is no longer skipped
+    row.save(update_fields=["opening_balance", "start_date", "opening_skipped_at"])
 
     logger.info(
         "opening balance: entity=%s start=%s amount=%s settings_created=%s",
@@ -138,3 +148,24 @@ def save_opening_balance(user_id, entity_id: str, start_date, amount) -> dict:
         "cash_addition": 0.00,
         "adjusted_opening_balance": float(value),
     }
+
+
+def skip_opening_balance(user_id, entity_id: str) -> dict:
+    """"Skip for now": leave the balance not set and remember the skip. A company that already
+    has a balance keeps it - nothing is cleared - and the answer says it was not skipped."""
+    if not has_permission_by_user_id(user_id, Permission.REPORT_EDIT_OWN, entity_id):
+        raise AccessDeniedError("Access denied")
+
+    with transaction.atomic():
+        # The row may not exist yet (entity_id is its primary key, so two creates cannot both
+        # land); the lock keeps a skip from racing a save of the balance.
+        EntityPettycashSettings.objects.get_or_create(entity_id=entity_id)
+        row = EntityPettycashSettings.objects.select_for_update().get(entity_id=entity_id)
+        if row.start_date is not None:
+            logger.info("opening balance skip: entity=%s already set, kept", entity_id)
+            return {"skipped": False}
+        if row.opening_skipped_at is None:
+            row.opening_skipped_at = timezone.now()
+            row.save(update_fields=["opening_skipped_at"])
+    logger.info("opening balance skip: entity=%s left not set", entity_id)
+    return {"skipped": True}
