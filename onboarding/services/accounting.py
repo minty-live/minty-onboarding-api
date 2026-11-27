@@ -28,7 +28,8 @@ from __future__ import annotations
 import logging
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
+from django.utils import timezone
 from minty_db.enums import SaleType
 from minty_db.models import (
     AccountInfo,
@@ -572,6 +573,50 @@ SETTINGS_COLUMNS = [c for c, _t in SLOTS.values()] + ["discrepancy_bank_account_
 USED_ACCOUNT = "{name} is already used in your records or Petty Cash Settings, so it can't be deleted."
 
 
+def _slot_filter(account_id) -> Q:
+    """Petty Cash Settings' columns holding this account (daily closing's accounts)."""
+    return (
+        Q(**{SETTINGS_COLUMNS[0]: account_id})
+        | Q(bank_account_id=account_id)
+        | Q(cash_sale_account_id=account_id)
+        | Q(discrepancy_account_id=account_id)
+        | Q(director_account_id=account_id)
+        | Q(discrepancy_bank_account_id=account_id)
+        | Q(electronic_sale_account_id=account_id)
+        | Q(delivery_sale_account_id=account_id)
+    )
+
+
+def in_settings(account: AccountInfo) -> bool:
+    """Petty Cash Settings uses the account for daily closing."""
+    return EntityPettycashSettings.objects.filter(_slot_filter(account.id)).exists()
+
+
+def account_uses(entity_id, accounts) -> dict:
+    """``{account id: (expense lines, bills, in Petty Cash Settings)}`` - what uses each account, for
+    the sentence a used one's delete gives (the user, 2026-11-27: "used by 12 expenses and 3 bills").
+    A bill counts once however many of its lines name the account: by id, or by code on a line saved
+    before ``bill_line.account_id``. A few queries for the lot."""
+    accounts = list(accounts)
+    ids = [a.id for a in accounts]
+    if not ids:
+        return {}
+    expenses = dict(ReportExpense.objects.filter(account_id__in=ids).values("account_id")
+                    .annotate(n=Count("id")).values_list("account_id", "n"))
+    bills: dict = {i: set() for i in ids}
+    for account_id, bill_id in BillLine.objects.filter(account_id__in=ids).values_list("account_id", "bill_id"):
+        bills[account_id].add(bill_id)
+    by_code = {a.xero_code: a.id for a in accounts if a.xero_code}
+    if by_code:
+        for code, bill_id in (BillLine.objects.filter(bill__entity_id=entity_id, account_id__isnull=True,
+                                                      account_code__in=list(by_code))
+                              .values_list("account_code", "bill_id")):
+            bills[by_code[code]].add(bill_id)
+    settings = EntityPettycashSettings.objects.filter(entity_id=entity_id).values(*SETTINGS_COLUMNS).first() or {}
+    slotted = {v for v in settings.values() if v}
+    return {i: (expenses.get(i, 0), len(bills[i]), i in slotted) for i in ids}
+
+
 def _used(account: AccountInfo) -> bool:
     """Something uses the account - accounts-api's rule (``xero/services/usage.py``): an expense
     line, a bill line (by id, or by code on a line saved before ``bill_line.account_id``), an
@@ -587,16 +632,7 @@ def _used(account: AccountInfo) -> bool:
             ).exists()
         )
         or AccountInfo.objects.filter(merged_into_id=account_id).exists()
-        or EntityPettycashSettings.objects.filter(
-            Q(**{SETTINGS_COLUMNS[0]: account_id})
-            | Q(bank_account_id=account_id)
-            | Q(cash_sale_account_id=account_id)
-            | Q(discrepancy_account_id=account_id)
-            | Q(director_account_id=account_id)
-            | Q(discrepancy_bank_account_id=account_id)
-            | Q(electronic_sale_account_id=account_id)
-            | Q(delivery_sale_account_id=account_id)
-        ).exists()
+        or in_settings(account)
     )
 
 
@@ -649,6 +685,24 @@ def _old_rows(
         account_id=account.id,
         defaults={"name": account.name, "type": account.type, "is_active": petty},
     )
+    _bill_row(account, entity, previous_code, active=bills)
+    for module, on in (("PETTY_CASH", petty), ("PAYMENT_REQUEST", bills)):
+        AccountModule.objects.get_or_create(
+            account_id=account.id,
+            module_code=module,
+            defaults={"entity_id": entity.id, "is_active": on},
+        )
+
+
+def _bill_row(account: AccountInfo, entity: Entity, previous_code, *, active: bool) -> None:
+    """Payment Request's bill code for an expense account. Minty's own: the hand-made row of its
+    (previous) code, made when missing. One linked to Xero: Xero's row, whose code is Xero's and kept
+    by the sync - only its name and type follow (edited with Xero off; the user, 2026-11-27)."""
+    if account.xero_account_id:
+        EntityBillAccountXero.objects.filter(
+            entity_id=entity.id, xero_account_id=account.xero_account_id
+        ).update(account_name=account.name, account_type=account.type)
+        return
     bill = EntityBillAccountXero.objects.filter(
         entity_id=entity.id,
         account_code=previous_code or account.code,
@@ -662,21 +716,11 @@ def _old_rows(
             account_name=account.name,
             account_type=account.type,
             xero_account_id="",
-            is_active=bills,
+            is_active=active,
         )
-    else:
-        bill.account_code, bill.account_name, bill.account_type = (
-            account.code,
-            account.name,
-            account.type,
-        )
-        bill.save(update_fields=["account_code", "account_name", "account_type"])
-    for module, on in (("PETTY_CASH", petty), ("PAYMENT_REQUEST", bills)):
-        AccountModule.objects.get_or_create(
-            account_id=account.id,
-            module_code=module,
-            defaults={"entity_id": entity.id, "is_active": on},
-        )
+        return
+    bill.account_code, bill.account_name, bill.account_type = account.code, account.name, account.type
+    bill.save(update_fields=["account_code", "account_name", "account_type"])
 
 
 def _create(
@@ -706,6 +750,7 @@ def _create(
     )
     if not is_system:
         _old_rows(account, entity, modules=modules)
+    mark_offline_change(entity, account)
     return account
 
 
@@ -714,6 +759,10 @@ def _remove(account: AccountInfo) -> None:
     EntityBillAccountXero.objects.filter(
         entity_id=account.entity_id, account_code=account.code, xero_account_id=""
     ).delete()
+    if account.xero_account_id:  # one linked to Xero, deleted with Xero off (the user, 2026-11-27)
+        EntityBillAccountXero.objects.filter(
+            entity_id=account.entity_id, xero_account_id=account.xero_account_id
+        ).delete()
     EntityAccountXero.objects.filter(account_id=account.id).delete()
     AccountModule.objects.filter(account_id=account.id).delete()
     account.delete()
@@ -750,6 +799,29 @@ def _assign(entity_id, role, account: AccountInfo | None) -> dict:
 ACCOUNTS_IN_XERO = ("This company is connected to Xero, so accounts are added and changed in Xero. "
                     "Make the change there, and Minty follows.")
 LIVE_ON_XERO = {"error": ACCOUNTS_IN_XERO}
+#: Xero off, a matching open (the user, 2026-11-27): the matching is choosing each row's Xero
+#: account, so a row linked to Xero waits for it to be finished or closed.
+MATCHING_OPEN = ("The Xero matching is still open. Finish or close it in Settings, under Integration, "
+                 "then try again.")
+
+
+def mark_offline_change(entity: Entity, row) -> None:
+    """``minty_changed_at`` on an account or contact added or changed while the company holds an
+    organisation with Xero off (the user, 2026-11-27): the reconnect's matching asks about it
+    (accounts-api ``matching.needs_matching``) and Finish clears it. A company that never had Xero, or
+    is live, marks nothing."""
+    if not entity.xero_org_id or xero_connected(entity):
+        return
+    row.minty_changed_at = timezone.now()
+    type(row).objects.filter(id=row.id).update(minty_changed_at=row.minty_changed_at)
+
+
+def linked_row_waits(entity: Entity) -> bool:
+    """Whether a row linked to Xero waits: while a matching is open. With Xero off the company is
+    Minty-only (the user, 2026-11-27; was "changed in Xero only" since 2026-11-19): its linked rows are
+    edited and deleted here, the stored link kept for the matching at reconnect. While live every
+    account is refused before this (``LIVE_ON_XERO``)."""
+    return bool(entity.xero_matching)
 
 
 def create_account(user_id, entity_id, payload: dict) -> tuple[dict, int]:
@@ -813,8 +885,8 @@ def update_account(user_id, entity_id, account_id, payload: dict) -> tuple[dict,
     account = _own(entity_id, account_id)
     if account is None:
         return {"error": "That account isn't in this company. Reload the list and try again."}, 404
-    if account.xero_account_id:
-        return {"error": "This account comes from Xero. Change it in Xero, and Minty follows."}, 409
+    if account.xero_account_id and linked_row_waits(entity):
+        return {"error": MATCHING_OPEN}, 409
     clean, fields = _check(entity_id, payload, exclude=account.id)
     if fields:
         return {"error": next(iter(fields.values())), "fields": fields}, 409 if _is_clash(
@@ -835,12 +907,13 @@ def _apply_update(entity: Entity, account: AccountInfo, clean: dict) -> None:
         clean["name"],
         clean["description"],
     )
-    account.account_type, account.type, account.xero_code = (
-        clean["type"],
-        XERO_TYPE[clean["type"]],
-        clean["code"],
-    )
+    account.account_type, account.type = clean["type"], XERO_TYPE[clean["type"]]
+    if not account.xero_account_id:
+        # Minty's own: its code is the one it publishes with. A linked one keeps Xero's code until
+        # the matching at reconnect, where Xero's details win (the user, 2026-11-27)
+        account.xero_code = clean["code"]
     account.save(update_fields=["code", "name", "description", "account_type", "type", "xero_code"])
+    mark_offline_change(entity, account)
     if not account.is_system:
         _old_rows(account, entity, previous_code=previous)
     for column, types in SLOTS.values():
@@ -867,10 +940,8 @@ def delete_account(user_id, entity_id, account_id) -> tuple[dict, int]:
         return {
             "error": "Daily closing needs this account. Choose another one for it instead."
         }, 409
-    if account.xero_account_id:
-        return {
-            "error": "This account comes from Xero. Archive it in Xero, and Minty follows."
-        }, 409
+    if account.xero_account_id and linked_row_waits(entity):
+        return {"error": MATCHING_OPEN}, 409
     if _used(account):
         return {"error": USED_ACCOUNT.format(name=account.name)}, 409
     with transaction.atomic():

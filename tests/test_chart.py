@@ -8,7 +8,14 @@ import uuid
 import pytest
 from minty_db.models import (
     AccountInfo,
+    AccountModule,
     Bill,
+    BillLine,
+    Entity,
+    EntityAccountXero,
+    EntityBillAccountXero,
+    EntityPettycashSettings,
+    Report,
     ReportExpense,
     UserEntity,
     XeroContact,
@@ -200,26 +207,104 @@ def test_a_live_company_changes_and_deletes_no_account_in_minty(client, user, li
                   .values_list("name", flat=True)) == ["Rent", "Spare"]
 
 
+#: A matching is choosing the links: a row linked to Xero waits for it (the user, 2026-11-27).
+MATCHING_OPEN = "The Xero matching is still open. Finish or close it in Settings, under Integration, then try again."
+
+
 @pytest.mark.django_db
-def test_xero_off_an_account_linked_to_xero_waits_and_minty_ones_change(client, user, disconnected):
-    """Xero off (the user, 2026-11-19, with doc A1): one linked to Xero is changed in Xero only;
-    Minty's own can be."""
+def test_xero_off_an_account_linked_to_xero_is_minty_s_and_keeps_its_link(client, user, disconnected):
+    """Disconnected = a Minty-only company (the user, 2026-11-27; was "changed in Xero only" since
+    2026-11-19): a linked account is edited and deleted here, its stored link kept for reconnecting."""
+    from minty_db.models import EntityBillAccountXero
+
     rent = account(disconnected, "Rent", "469", source="xero", xero_id="x-rent")
-    said = "This account comes from Xero. Change it in Xero, and Minty follows."
+    rent.xero_code = "X469"
+    rent.save(update_fields=["xero_code"])
+    bill_code = EntityBillAccountXero.objects.create(entity_id=disconnected.id, account_code="X469",
+                                                     account_name="Rent", account_type="EXPENSE",
+                                                     xero_account_id="x-rent")
     edit = call(client, user, disconnected, "patch", f"/accounts/{rent.id}",
-                {"code": "469", "name": "Rent HK", "type": "expense"})
-    assert (edit.status_code, edit.json()["error"]) == (409, said)
-    gone = call(client, user, disconnected, "delete", f"/accounts/{rent.id}")
-    assert (gone.status_code, gone.json()["error"]) == (409, said)
+                {"code": "470", "name": "Rent HK", "type": "expense"})
+    assert edit.status_code == 200, edit.json()
     rent.refresh_from_db()
-    assert (rent.name, rent.record_status) == ("Rent", "active")
+    # Minty's code and name change; the link and Xero's code stay for the matching at reconnect
+    assert (rent.code, rent.name, rent.xero_account_id, rent.xero_code) == ("470", "Rent HK", "x-rent", "X469")
+    assert rent.minty_changed_at is not None, "marked: the reconnect opens the matching for it"
+    bills = EntityBillAccountXero.objects.filter(entity_id=disconnected.id)
+    assert [(b.account_code, b.account_name, b.xero_account_id) for b in bills] == [("X469", "Rent HK", "x-rent")]
+
+    gone = call(client, user, disconnected, "delete", f"/accounts/{rent.id}")
+    assert gone.status_code == 200, gone.json()
+    assert not AccountInfo.objects.filter(id=rent.id).exists()
+    assert not EntityBillAccountXero.objects.filter(id=bill_code.id).exists(), "out of the bill picker too"
 
     own = account(disconnected, "Spare", "471")
     edit = call(client, user, disconnected, "patch", f"/accounts/{own.id}",
                 {"code": "471", "name": "Spare parts", "type": "expense"})
     assert edit.status_code == 200
     assert call(client, user, disconnected, "post", "/accounts",
-                {"code": "470", "name": "Fuel", "type": "expense"}).status_code == 201
+                {"code": "472", "name": "Fuel", "type": "expense"}).status_code == 201
+
+
+@pytest.mark.django_db
+def test_while_a_matching_is_open_a_linked_account_or_contact_waits(client, user, disconnected):
+    """The matching is choosing each account's Xero account (the user, 2026-11-27): a linked row
+    waits until it is finished or closed; Minty's own still change."""
+    from minty_db.models import Entity
+
+    Entity.objects.filter(id=disconnected.id).update(xero_matching="new_accounts")
+    rent = account(disconnected, "Rent", "469", source="xero", xero_id="x-rent")
+    kee = contact(disconnected, "Kee Wah", source="xero", xero_id="x-kee")
+    for path in ("/accounts", "/contacts"):  # the page hides Edit and Delete on linked rows
+        assert call(client, user, disconnected, "get", path).json()["matching_open"] is True
+    answers = [
+        call(client, user, disconnected, "patch", f"/accounts/{rent.id}",
+             {"code": "469", "name": "Rent HK", "type": "expense"}),
+        call(client, user, disconnected, "delete", f"/accounts/{rent.id}"),
+        call(client, user, disconnected, "patch", f"/contacts/{kee.id}", {"name": "Kee Wah Bakery"}),
+        call(client, user, disconnected, "delete", f"/contacts/{kee.id}"),
+    ]
+    assert [(a.status_code, a.json()["error"]) for a in answers] == [(409, MATCHING_OPEN)] * 4
+    assert AccountInfo.objects.get(id=rent.id).name == "Rent"
+    assert XeroContactSync.objects.get(id=kee.id).name == "Kee Wah"
+    own = account(disconnected, "Spare", "471")
+    assert call(client, user, disconnected, "patch", f"/accounts/{own.id}",
+                {"code": "471", "name": "Spare parts", "type": "expense"}).status_code == 200
+
+
+@pytest.mark.django_db
+def test_xero_off_a_contact_linked_to_xero_is_renamed_and_deleted_here(client, user, disconnected):
+    """Disconnected = Minty-only for contacts too (the user, 2026-11-27): the link is kept."""
+    kee = contact(disconnected, "Kee Wah", source="xero", xero_id="x-kee")
+    renamed = call(client, user, disconnected, "patch", f"/contacts/{kee.id}", {"name": "Kee Wah Bakery"})
+    assert renamed.status_code == 200, renamed.json()
+    kee.refresh_from_db()
+    assert (kee.name, kee.xero_contact_id) == ("Kee Wah Bakery", "x-kee")
+    assert kee.minty_changed_at is not None
+    assert call(client, user, disconnected, "delete", f"/contacts/{kee.id}").json() == {
+        "message": "Kee Wah Bakery deleted."}
+    assert not XeroContactSync.objects.filter(id=kee.id).exists()
+
+
+@pytest.mark.django_db
+def test_only_a_change_with_xero_off_is_marked_for_the_reconnect(client, user, entity, disconnected):
+    """``minty_changed_at`` (the user, 2026-11-27): set when a company holding an organisation changes a
+    row with Xero off - added or edited - so the reconnect's matching asks about it."""
+    added = call(client, user, disconnected, "post", "/accounts", {"code": "470", "name": "Fuel", "type": "expense"})
+    assert AccountInfo.objects.get(id=added.json()["account"]["id"]).minty_changed_at is not None
+    sam = call(client, user, disconnected, "post", "/contacts", {"name": "Sam's Fish"})
+    assert XeroContactSync.objects.get(id=sam.json()["contact"]["id"]).minty_changed_at is not None
+
+
+@pytest.mark.django_db
+def test_a_company_that_never_had_xero_marks_nothing(client, user, entity):
+    rent = account(entity, "Rent", "469")
+    assert call(client, user, entity, "patch", f"/accounts/{rent.id}",
+                {"code": "469", "name": "Rent HK", "type": "expense"}).status_code == 200
+    kee = contact(entity, "Kee Wah")
+    assert call(client, user, entity, "patch", f"/contacts/{kee.id}", {"name": "Kee Wah Bakery"}).status_code == 200
+    assert AccountInfo.objects.get(id=rent.id).minty_changed_at is None
+    assert XeroContactSync.objects.get(id=kee.id).minty_changed_at is None
 
 
 @pytest.mark.django_db
@@ -236,7 +321,8 @@ def test_delete_removes_an_unused_account_and_refuses_a_used_one(client, user, e
     BillLine.objects.create(bill=Bill.objects.get(reference="B-1"), account_id=rent.id, account_code="469")
     kept = call(client, user, entity, "delete", f"/accounts/{rent.id}")
     assert kept.status_code == 409
-    assert kept.json()["error"] == "Rent is already used in your records or Petty Cash Settings, so it can't be deleted."
+    # it says what uses it and offers Archive (the user, 2026-11-27)
+    assert kept.json() == {"error": "Rent is used by 1 bill. Archive it instead.", "can_archive": True}
     assert AccountInfo.objects.get(id=rent.id).record_status == "active"
     names = [a["name"] for a in call(client, user, entity, "get", "/accounts").json()["accounts"]]
     assert "Rent" in names
@@ -370,8 +456,7 @@ def test_a_used_contact_is_refused_and_stays(client, user, live, xero):
     assert read == {"Kee Wah": True, "Walk-in Customer": True, "Sam's Fish": True}
     refused = call(client, user, live, "delete", f"/contacts/{kee.id}")
     assert refused.status_code == 409
-    assert refused.json()["error"] == (
-        "Kee Wah is already used in your records or Petty Cash Settings, so it can't be deleted.")
+    assert refused.json()["error"] == "Kee Wah is used by 1 expense. Archive it instead."
     for row in (walk_in, survivor):
         assert call(client, user, live, "delete", f"/contacts/{row.id}").status_code == 409
     assert xero.sent == []  # Xero is never told
@@ -526,3 +611,189 @@ def test_each_account_carries_its_minty_code_and_its_xero_code(client, user, liv
     rows = {a["name"]: (a["code"], a["xero_code"])
             for a in call(client, user, live, "get", "/accounts").json()["accounts"]}
     assert rows == {"Rent": ("6100", "469"), "Own": ("6200", "")}
+
+# ---- archive and restore (the user, 2026-11-27): an account or contact in use can't be deleted - the
+# refusal says what uses it and offers Archive. Archived: out of every picker, still shown on old
+# records, restorable. Only while not live on Xero; a linked row waits while a matching is open.
+
+
+def _added(client, user, entity, name="Rent", code="469"):
+    """An expense account added in Settings, with its Petty Cash tick, bill code and module rows."""
+    resp = call(client, user, entity, "post", "/accounts", {"code": code, "name": name, "type": "expense"})
+    assert resp.status_code == 201, resp.json()
+    return AccountInfo.objects.get(id=resp.json()["account"]["id"])
+
+
+def _expenses(entity, n, **on):
+    report, _ = Report.objects.get_or_create(entity_id=entity.id, transaction_date="2026-11-01")
+    for _ in range(n):
+        ReportExpense.objects.create(report_id=report.id, amount=1, **on)
+
+
+def _bills(entity, n, account=None, **on):
+    for i in range(n):
+        bill = Bill.objects.create(entity_id=entity.id, reference=f"B-{i}-{account.id if account else ''}", **on)
+        if account is not None:
+            BillLine.objects.create(bill=bill, account_id=account.id, account_code=account.code)
+            BillLine.objects.create(bill=bill, account_id=account.id, account_code=account.code)
+
+
+# ---- accounts -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_a_used_accounts_delete_says_what_uses_it_and_offers_archive(client, user, entity):
+    rent = _added(client, user, entity)
+    _expenses(entity, 2, account_id=rent.id)
+    _bills(entity, 1, account=rent)  # one bill, two lines on it: one bill
+    refused = call(client, user, entity, "delete", f"/accounts/{rent.id}")
+    assert (refused.status_code, refused.json()) == (
+        409, {"error": "Rent is used by 2 expenses and 1 bill. Archive it instead.", "can_archive": True})
+    # the list says it too, so the page asks Archive instead before any delete is sent
+    row = next(a for a in call(client, user, entity, "get", "/accounts").json()["accounts"] if a["name"] == "Rent")
+    assert (row["used_note"], row["can_archive"]) == ("Rent is used by 2 expenses and 1 bill. Archive it instead.", True)
+
+    fuel = _added(client, user, entity, "Fuel", "470")
+    _expenses(entity, 1, account_id=fuel.id)
+    assert call(client, user, entity, "delete", f"/accounts/{fuel.id}").json()["error"] == (
+        "Fuel is used by 1 expense. Archive it instead.")
+
+
+@pytest.mark.django_db
+def test_an_account_daily_closing_uses_is_neither_deleted_nor_archived(client, user, entity):
+    rent = _added(client, user, entity)
+    EntityPettycashSettings.objects.create(entity_id=entity.id, director_account_id=rent.id)
+    said = "Rent is used in Petty Cash Settings. Choose another account there first."
+    row = next(a for a in call(client, user, entity, "get", "/accounts").json()["accounts"] if a["name"] == "Rent")
+    assert (row["used_note"], row["can_archive"]) == (said, False)
+    refused = call(client, user, entity, "delete", f"/accounts/{rent.id}")
+    assert (refused.status_code, refused.json()) == (409, {"error": said})
+    archived = call(client, user, entity, "post", f"/accounts/{rent.id}/archive", {})
+    assert (archived.status_code, archived.json()) == (409, {"error": said})
+
+
+@pytest.mark.django_db
+def test_archive_takes_an_account_out_of_every_picker_and_restore_brings_it_back(client, user, entity):
+    rent = _added(client, user, entity)
+    _expenses(entity, 1, account_id=rent.id)
+    done = call(client, user, entity, "post", f"/accounts/{rent.id}/archive", {})
+    assert (done.status_code, done.json()) == (200, {"message": "Rent archived."})
+    rent.refresh_from_db()
+    # archived by Minty: Xero's status is untouched, so it is never taken for one Xero archived (A3)
+    assert (rent.record_status, rent.status) == ("archived", "ACTIVE")
+    assert not EntityAccountXero.objects.get(account_id=rent.id).is_active, "Petty Cash's picker"
+    assert not EntityBillAccountXero.objects.get(entity_id=entity.id, account_code="469").is_active, "the bills'"
+    assert not AccountModule.objects.filter(account_id=rent.id, is_active=True).exists()
+
+    read = call(client, user, entity, "get", "/accounts").json()
+    assert "Rent" not in [a["name"] for a in read["accounts"]]
+    assert [(a["name"], a["used"]) for a in read["archived_accounts"]] == [("Rent", True)]
+
+    back = call(client, user, entity, "post", f"/accounts/{rent.id}/restore", {})
+    assert (back.status_code, back.json()["message"]) == (200, "Rent is back.")
+    rent.refresh_from_db()
+    assert rent.record_status == "active"
+    assert EntityAccountXero.objects.get(account_id=rent.id).is_active
+    assert EntityBillAccountXero.objects.get(entity_id=entity.id, account_code="469").is_active
+    assert call(client, user, entity, "get", "/accounts").json()["archived_accounts"] == []
+
+
+@pytest.mark.django_db
+def test_restore_is_refused_when_another_account_took_its_code(client, user, entity):
+    rent = _added(client, user, entity)
+    _expenses(entity, 1, account_id=rent.id)
+    assert call(client, user, entity, "post", f"/accounts/{rent.id}/archive", {}).status_code == 200
+    _added(client, user, entity, "Office Rent", "469")
+    refused = call(client, user, entity, "post", f"/accounts/{rent.id}/restore", {})
+    assert refused.status_code == 409 and "469" in refused.json()["error"]
+    assert AccountInfo.objects.get(id=rent.id).record_status == "archived"
+
+
+@pytest.mark.django_db
+def test_no_archive_while_live_on_xero_and_a_linked_one_waits_for_the_matching(client, user, disconnected):
+    rent = account(disconnected, "Rent", "469", source="xero", xero_id="x-rent")
+    Entity.objects.filter(id=disconnected.id).update(xero_matching="new_accounts")
+    resp = call(client, user, disconnected, "post", f"/accounts/{rent.id}/archive", {})
+    assert (resp.status_code, resp.json()["error"]) == (409, MATCHING_OPEN)
+    Entity.objects.filter(id=disconnected.id).update(xero_matching=None, status="connected")
+    resp = call(client, user, disconnected, "post", f"/accounts/{rent.id}/archive", {})
+    assert (resp.status_code, resp.json()["error"]) == (409, ACCOUNTS_IN_XERO)
+    assert AccountInfo.objects.get(id=rent.id).record_status == "active"
+
+
+@pytest.mark.django_db
+def test_xero_off_a_linked_account_archives_and_its_xero_bill_code_follows(client, user, disconnected):
+    rent = account(disconnected, "Rent", "469", source="xero", xero_id="x-rent")
+    EntityBillAccountXero.objects.create(entity_id=disconnected.id, account_code="469", account_name="Rent",
+                                         account_type="EXPENSE", xero_account_id="x-rent")
+    assert call(client, user, disconnected, "post", f"/accounts/{rent.id}/archive", {}).status_code == 200
+    assert not EntityBillAccountXero.objects.get(entity_id=disconnected.id, xero_account_id="x-rent").is_active
+    assert AccountInfo.objects.get(id=rent.id).xero_account_id == "x-rent", "the link kept"
+
+
+@pytest.mark.django_db
+def test_a_cashier_neither_archives_nor_restores(client, user, entity):
+    from minty_db.models import UserEntity
+
+    rent = _added(client, user, entity)
+    UserEntity.objects.filter(user_id=user.id, entity_id=entity.id).update(role="cashier")
+    assert call(client, user, entity, "post", f"/accounts/{rent.id}/archive", {}).status_code == 403
+    assert call(client, user, entity, "post", f"/accounts/{rent.id}/restore", {}).status_code == 403
+
+
+# ---- contacts -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_a_used_contacts_delete_says_what_uses_it_and_offers_archive(client, user, entity):
+    kee = contact(entity, "Kee Wah")
+    _expenses(entity, 3, contact_id=kee.id)
+    _bills(entity, 2, contact_id=kee.id)
+    refused = call(client, user, entity, "delete", f"/contacts/{kee.id}")
+    assert (refused.status_code, refused.json()) == (
+        409, {"error": "Kee Wah is used by 3 expenses and 2 bills. Archive it instead.", "can_archive": True})
+    row = call(client, user, entity, "get", "/contacts").json()["contacts"][0]
+    assert (row["used_note"], row["can_archive"]) == ("Kee Wah is used by 3 expenses and 2 bills. Archive it instead.",
+                                                      True)
+
+
+@pytest.mark.django_db
+def test_a_contact_daily_closing_uses_is_neither_deleted_nor_archived(client, user, entity):
+    walk_in = contact(entity, "Walk-in Customer")
+    EntityPettycashSettings.objects.create(entity_id=entity.id, cash_sale_contact_id=walk_in.id)
+    said = "Walk-in Customer is used in Petty Cash Settings. Choose another contact there first."
+    assert call(client, user, entity, "delete", f"/contacts/{walk_in.id}").json() == {"error": said}
+    assert call(client, user, entity, "post", f"/contacts/{walk_in.id}/archive", {}).json() == {"error": said}
+
+
+@pytest.mark.django_db
+def test_archive_takes_a_contact_off_the_lists_and_restore_brings_it_back(client, user, entity):
+    kee = contact(entity, "Kee Wah")
+    _expenses(entity, 1, contact_id=kee.id)
+    done = call(client, user, entity, "post", f"/contacts/{kee.id}/archive", {})
+    assert (done.status_code, done.json()) == (200, {"message": "Kee Wah archived."})
+    assert XeroContactSync.objects.get(id=kee.id).record_status == "archived"
+    read = call(client, user, entity, "get", "/contacts").json()
+    assert read["contacts"] == [] and [c["name"] for c in read["archived_contacts"]] == ["Kee Wah"]
+
+    back = call(client, user, entity, "post", f"/contacts/{kee.id}/restore", {})
+    assert (back.status_code, back.json()["message"]) == (200, "Kee Wah is back.")
+    assert XeroContactSync.objects.get(id=kee.id).record_status == "active"
+
+
+@pytest.mark.django_db
+def test_a_contact_is_not_restored_over_one_of_the_same_name(client, user, entity):
+    kee = contact(entity, "Kee Wah")
+    _expenses(entity, 1, contact_id=kee.id)
+    assert call(client, user, entity, "post", f"/contacts/{kee.id}/archive", {}).status_code == 200
+    contact(entity, "kee  wah")
+    refused = call(client, user, entity, "post", f"/contacts/{kee.id}/restore", {})
+    assert refused.status_code == 409 and "already in your contacts" in refused.json()["error"]
+
+
+@pytest.mark.django_db
+def test_a_contact_linked_to_xero_is_archived_in_xero_while_live(client, user, live):
+    kee = contact(live, "Kee Wah", source="xero", xero_id="x-kee")
+    resp = call(client, user, live, "post", f"/contacts/{kee.id}/archive", {})
+    assert (resp.status_code, resp.json()["error"]) == (
+        409, "This contact comes from Xero. Change it in Xero, and Minty follows.")

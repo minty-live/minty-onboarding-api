@@ -78,6 +78,12 @@ account = _door({
     "PATCH": lambda user, entity, body, account_id: chart.edit_account(user, entity, account_id, body),
     "DELETE": lambda user, entity, _body, account_id: chart.delete_account(user, entity, account_id),
 })
+account_archive = _door({
+    "POST": lambda user, entity, _body, account_id: chart.archive_account(user, entity, account_id),
+})
+account_restore = _door({
+    "POST": lambda user, entity, _body, account_id: chart.restore_account(user, entity, account_id),
+})
 contacts = _door({
     "GET": lambda user, entity, _body: chart.contacts(user, entity),
     "POST": lambda user, entity, body: chart.add_contact(user, entity, body),
@@ -85,4 +91,10 @@ contacts = _door({
 contact = _door({
     "PATCH": lambda user, entity, body, contact_id: chart.edit_contact(user, entity, contact_id, body),
     "DELETE": lambda user, entity, _body, contact_id: chart.delete_contact(user, entity, contact_id),
+})
+contact_archive = _door({
+    "POST": lambda user, entity, _body, contact_id: chart.archive_contact(user, entity, contact_id),
+})
+contact_restore = _door({
+    "POST": lambda user, entity, _body, contact_id: chart.restore_contact(user, entity, contact_id),
 })

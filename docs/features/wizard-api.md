@@ -307,9 +307,13 @@ claims `entity_id` and `user_id`; anything else 401). The person's rights are ch
   (422, `core/xero_client.write`), unanswered 502, and nothing changes in Minty. A live company with
   no token: 409, reconnect. Not live: the company's own Minty rows; a row already linked to Xero
   waits for a reconnect (409).
-- **A used account or contact can't be deleted** (owner, 2026-11-18): refused with 409 "<name> is
-  already used in your records or Petty Cash Settings, so it can't be deleted.", checked before
-  Xero is told anything. "Used" is accounts-api's rule (`xero/services/usage.py`): an expense line,
+- **A used account or contact can't be deleted** (owner, 2026-11-18): refused with 409, checked before
+  Xero is told anything. Settings' refusal says what uses it and offers Archive (the user, 2026-11-27):
+  "<name> is used by 12 expenses and 3 bills. Archive it instead." with `can_archive: true` (a bill counts
+  once however many lines name it), or "<name> is used in Petty Cash Settings. Choose another account
+  (contact) there first." with no archive; the reads carry the same sentence per used row (`used_note`,
+  `can_archive`). The wizard's own delete keeps `USED_ACCOUNT` ("<name> is already used in your records
+  or Petty Cash Settings, so it can't be deleted."). "Used" is accounts-api's rule (`xero/services/usage.py`): an expense line,
   a bill line (by id, or by code on a line saved before `bill_line.account_id`), daily closing's
   accounts or contacts, or a record combined into it (`merged_into_id`); accounting's `_used`/`_held`
   and chart's `_contacts_used`. An unused one is deleted (archived in Xero when linked). Rows
@@ -327,6 +331,15 @@ claims `entity_id` and `user_id`; anything else 401). The person's rights are ch
   ("<name> is back."). A delete marks Minty's copy (`xero_account` / `xero_contact`) archived at
   once, so nothing links to it meanwhile. Offline, a row still linked to Xero is refused: "<name>
   was archived in Xero. Reconnect Xero to bring it back."
+- **Archive and restore** (the user, 2026-11-27): `POST .../accounts/<id>/archive` (COA_DELETE) sets
+  `record_status = 'archived'` - Xero's `status` untouched, so it is never taken for an account Xero
+  archived (A3) - and turns off its Petty Cash tick, bill code and module rows: out of every picker, still
+  shown on old records (they read it by id). `.../restore` (COA_CREATE) brings it back, refused 409 when
+  another account took its code or name. Contacts the same (`.../contacts/<id>/archive|restore`): off the
+  supplier lists, refused 409 on a name another contact holds. Not while live on Xero (a linked contact
+  while live: changed in Xero), nor one daily closing uses. The reads list them apart (`archived_accounts`,
+  `archived_contacts`). A connected company's chart is Xero's: an account or contact archived while
+  disconnected comes back at the sync (accounts-api `sync.apply_accounts` / `apply_contacts`).
 - Tests: `tests/test_chart.py`.
 
 ## Tests
@@ -348,14 +361,22 @@ a company `connected` (only matching does, once its accounts and suppliers are i
 - **A1**: an account added while Xero is off (Settings' General, `chart.add_account`) is never created in
   Xero - it is mapped on the matching screen. Xero's archived account of the same code and name is neither
   restored nor linked. While live, no account is added here at all (the user, 2026-11-23).
-- **Linked accounts are changed in Xero only** (the user, 2026-11-19): `chart.edit_account` /
-  `delete_account` refuse an account with a Xero id - 409 "This account comes from Xero. Change it in Xero,
-  and Minty follows."
+- **Disconnected = Minty-only** (the user, 2026-11-27; replaces 2026-11-19's "linked accounts are changed
+  in Xero only"): while the company is not live, `chart.edit_account` / `delete_account` and the wizard's
+  `update_account` / `delete_account` change and delete a linked account like Minty's own. The stored link
+  stays (`xero_account_id`, and Xero's code: `_apply_update` changes only Minty's code, `_bill_row` only
+  the name and type of Xero's bill-code row) for the matching at reconnect, where Xero's details win.
+  While a matching is open a linked row waits: 409 `MATCHING_OPEN` ("The Xero matching is still open.
+  Finish or close it in Settings, under Integration, then try again."). The reads carry `matching_open`.
+  Every add or edit while the company holds an organisation with Xero off marks the row
+  (`minty_changed_at`, minty-db v0.21; `accounting.mark_offline_change`), so the reconnect opens the
+  matching for it (accounts-api `matching.needs_matching`).
 - **A3**: `GET .../accounts` rows carry `gone_from_xero`; a linked account Xero archived or removed (the
   sync archives it here too - a trigger follows its status) stays in the list while records use it, for
   Settings to ask the person to map it.
 - **C4**: Minty never restores anything in Xero - a deleted account or contact added again comes back in
   Minty only; Xero's archived contact of the name is linked as it stands.
-- **Linked contacts are changed in Xero only too** (the user, 2026-11-19): `chart.edit_contact` /
-  `delete_contact` refuse a contact with a Xero id - 409 "This contact comes from Xero. Change it in Xero,
-  and Minty follows." Only contacts made in Minty and not yet in Xero are renamed or deleted here.
+- **Linked contacts are changed in Xero only while live** (the user, 2026-11-19): `chart.edit_contact` /
+  `delete_contact` refuse a contact with a Xero id while live - 409 "This contact comes from Xero. Change
+  it in Xero, and Minty follows." With Xero off they are renamed and deleted here, marked as accounts are
+  (the user, 2026-11-27); while a matching is open they wait (`MATCHING_OPEN`).

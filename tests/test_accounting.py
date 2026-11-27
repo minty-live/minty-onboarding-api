@@ -516,13 +516,16 @@ def test_changing_the_type_clears_a_slot_it_no_longer_fits(client, auth, minty):
 
 
 @pytest.mark.django_db
-def test_an_account_from_xero_is_changed_in_xero(client, auth, minty):
+def test_xero_off_an_account_from_xero_is_changed_here_and_keeps_its_link(client, auth, minty):
+    """Not connected = Minty-only (the user, 2026-11-27): an account linked to Xero is edited and
+    deleted here like Minty's own, its link and Xero's code kept for reconnecting."""
     account = AccountInfo.objects.create(
         entity_id=minty.id,
         name="Rent",
         type="EXPENSE",
         xero_account_id="g-1",
         code="469",
+        xero_code="X469",
         account_type="expense",
     )
     resp = patch(
@@ -531,7 +534,27 @@ def test_an_account_from_xero_is_changed_in_xero(client, auth, minty):
         f"/accounts/{account.id}",
         {"entity_id": str(minty.id), "code": "470", "name": "Rent", "type": "expense"},
     )
-    assert resp.status_code == 409 and "Change it in Xero" in resp.json()["error"]
+    assert resp.status_code == 200, resp.json()
+    account.refresh_from_db()
+    assert (account.code, account.xero_account_id, account.xero_code) == ("470", "g-1", "X469")
+    assert account.minty_changed_at is None, "no organisation: nothing to match at a reconnect"
+    gone = client.delete(f"{BASE}/accounts/{account.id}?entity_id={minty.id}", **auth)
+    assert gone.status_code == 200, gone.json()
+    assert not AccountInfo.objects.filter(id=account.id).exists()
+
+
+@pytest.mark.django_db
+def test_while_a_matching_is_open_an_account_from_xero_waits(client, auth, minty):
+    Entity.objects.filter(id=minty.id).update(xero_org_id="ORG-1", status="disconnected",
+                                              xero_matching="new_accounts")
+    account = AccountInfo.objects.create(entity_id=minty.id, name="Rent", type="EXPENSE", xero_account_id="g-1",
+                                         code="469", account_type="expense")
+    said = "The Xero matching is still open. Finish or close it in Settings, under Integration, then try again."
+    resp = patch(client, auth, f"/accounts/{account.id}",
+                 {"entity_id": str(minty.id), "code": "470", "name": "Rent", "type": "expense"})
+    assert (resp.status_code, resp.json()["error"]) == (409, said)
+    gone = client.delete(f"{BASE}/accounts/{account.id}?entity_id={minty.id}", **auth)
+    assert (gone.status_code, gone.json()["error"]) == (409, said)
 
 
 @pytest.mark.django_db

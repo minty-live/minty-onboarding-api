@@ -101,6 +101,15 @@ urlpatterns = [
     # a company's accounts and contacts for the hub's Settings, from accounts-api only (2026-11-12)
     path("api/internal/chart/accounts", internal.accounts, name="internal_chart_accounts"),
     path("api/internal/chart/accounts/<str:account_id>", internal.account, name="internal_chart_account"),
+    # archive and restore (the user, 2026-11-27)
+    path("api/internal/chart/accounts/<str:account_id>/archive", internal.account_archive,
+         name="internal_chart_account_archive"),
+    path("api/internal/chart/accounts/<str:account_id>/restore", internal.account_restore,
+         name="internal_chart_account_restore"),
     path("api/internal/chart/contacts", internal.contacts, name="internal_chart_contacts"),
     path("api/internal/chart/contacts/<str:contact_id>", internal.contact, name="internal_chart_contact"),
+    path("api/internal/chart/contacts/<str:contact_id>/archive", internal.contact_archive,
+         name="internal_chart_contact_archive"),
+    path("api/internal/chart/contacts/<str:contact_id>/restore", internal.contact_restore,
+         name="internal_chart_contact_restore"),
 ]
