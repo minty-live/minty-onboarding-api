@@ -681,10 +681,15 @@ def _old_rows(
         EntityAccountXero.objects.filter(account_id=account.id).delete()
         return
     petty, bills = modules
-    EntityAccountXero.objects.update_or_create(
+    # the Petty Cash tick is set when the row is made; an edit keeps it as the person left it
+    # (it re-ticked on every edit until 2026-11-27)
+    tick, made = EntityAccountXero.objects.get_or_create(
         account_id=account.id,
         defaults={"name": account.name, "type": account.type, "is_active": petty},
     )
+    if not made and (tick.name, tick.type) != (account.name, account.type):
+        tick.name, tick.type = account.name, account.type
+        tick.save(update_fields=["name", "type"])
     _bill_row(account, entity, previous_code, active=bills)
     for module, on in (("PETTY_CASH", petty), ("PAYMENT_REQUEST", bills)):
         AccountModule.objects.get_or_create(

@@ -323,7 +323,11 @@ claims `entity_id` and `user_id`; anything else 401). The person's rights are ch
   that name - the stored copies, then a live `GET /Contacts?searchTerm=` narrowed to the exact name
   (owner's decisions doc C5, 2026-11-19) - before making one there as a supplier; a Minty-made
   contact met while live goes into Xero then (`find_or_make_contact`, also behind the wizard's
-  `/contacts/create`). Xero not answering the search adds nothing (502).
+  `/contacts/create`). Xero not answering the search adds nothing (502). Linked to an existing Xero
+  contact, the contact takes Xero's name (case and spacing as Xero has them) and its bills follow
+  (the user, 2026-11-27).
+- **An edit keeps the Petty Cash tick** (2026-11-27): `_old_rows` sets `entity_account_xero.is_active`
+  only when it makes the row; an edit updates its name and type only (every edit re-ticked it before).
 - **Deleted, then added again: brought back, never a twin** (owner, 2026-11-12). An account added
   with the code, name and type of one the company deleted - or a contact with the name of one - is
   that one: Minty's archived row restored (its name kept; modules and old-reader rows on again), or,

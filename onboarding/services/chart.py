@@ -536,35 +536,50 @@ def contacts(user_id, entity_id) -> tuple[dict, int]:
             "matching_open": accounting.linked_row_waits(entity), "permissions": _rights(user_id, entity_id)}, 200
 
 
-def _xero_contact_for(token, entity: Entity, name: str) -> str:
+def _xero_contact_for(token, entity: Entity, name: str) -> tuple[str, str]:
     """The Xero contact of that name the company doesn't hold yet - from the stored copies, else
     searched live (``GET /Contacts?searchTerm=``, Xero's loose case-insensitive search, so only the
-    exact name counts) - else a new one made in Xero as a supplier. Its ContactID; never a twin in
-    Xero (owner's decisions doc C5, 2026-11-19)."""
+    exact name counts) - else a new one made in Xero as a supplier. ``(ContactID, Xero's name)``; never
+    a twin in Xero (owner's decisions doc C5, 2026-11-19)."""
     held = set(XeroContactSync.objects.filter(entity_id=entity.id, xero_contact_id__isnull=False)
                .values_list("xero_contact_id", flat=True))
     copy = next((c for c in XeroContact.objects.filter(entity_id=entity.id, xero_org_id=str(entity.xero_org_id),
                                                        status="ACTIVE")
                  if _key(c.name) == _key(name) and c.xero_guid not in held), None)
     if copy is not None:
-        return copy.xero_guid
+        return copy.xero_guid, copy.name
     try:
         found = xero_client.get(token, entity.xero_org_id, "Contacts",
                                 {"searchTerm": " ".join(name.split()), "page": 1}).get("Contacts") or []
     except xero_client.XeroUnanswered:
         raise _Stop(UNANSWERED, 502) from None
-    match = next((c["ContactID"] for c in found
+    match = next((c for c in found
                   if c.get("ContactID") and _key(c.get("Name")) == _key(name) and c["ContactID"] not in held
                   and str(c.get("ContactStatus") or "ACTIVE").upper() == "ACTIVE"), None)
     if match is not None:
-        return match
+        return match["ContactID"], match.get("Name") or name
     made = _send(token, entity, "POST", "Contacts",
                  {"Contacts": [{"Name": name, "IsCustomer": False, "IsSupplier": True}]})
     xero_id = ((made.get("Contacts") or [{}])[0]).get("ContactID")
     if not xero_id:
         logger.error("chart: Xero made contact %r for entity %s but sent no id", name, entity.id)
         raise _Stop(UNANSWERED, 502)
-    return xero_id
+    return xero_id, name
+
+
+def _xero_name(entity: Entity, contact: XeroContactSync, xero_name: str) -> None:
+    """A contact linked to a Xero contact takes Xero's name at the link (the user, 2026-11-27: linked
+    contacts are changed in Xero and Minty follows - never a silent flip at the next sync); the bills
+    on it follow at once."""
+    from minty_db.models import Bill
+
+    name = (xero_name or "").strip()[:CONTACT_MAX]
+    if not name or name == contact.name:
+        return
+    XeroContactSync.objects.filter(id=contact.id).update(name=name)
+    contact.name = name
+    Bill.objects.filter(entity_id=entity.id, contact_id=contact.id).exclude(contact_name=name[:100]).update(
+        contact_name=name[:100])
 
 
 def find_or_make_contact(user_id, entity: Entity, name: str, token: str | None) -> tuple[XeroContactSync, str]:
@@ -579,14 +594,16 @@ def find_or_make_contact(user_id, entity: Entity, name: str, token: str | None) 
     if holder is not None:
         if token and not holder.xero_contact_id:
             # made in Minty while offline: into Xero now, so the picker's answer is usable there
-            xero_id = _xero_contact_for(token, entity, holder.name)
+            xero_id, xero_name = _xero_contact_for(token, entity, holder.name)
             XeroContactSync.objects.filter(id=holder.id).update(xero_contact_id=xero_id,
                                                                 xero_org_id=str(entity.xero_org_id))
             holder.xero_contact_id = xero_id
+            _xero_name(entity, holder, xero_name)
         return holder, "found"
-    xero_id = _xero_contact_for(token, entity, name) if token else None
+    xero_id, xero_name = _xero_contact_for(token, entity, name) if token else (None, name)
     contact = XeroContactSync.objects.create(
-        entity_id=entity.id, name=name, source="user", created_by=user_id, category="expense_contact",
+        entity_id=entity.id, name=(xero_name or name)[:CONTACT_MAX], source="user", created_by=user_id,
+        category="expense_contact",
         xero_contact_id=xero_id, xero_org_id=str(entity.xero_org_id) if xero_id else None)
     return contact, "made"
 

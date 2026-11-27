@@ -247,6 +247,20 @@ def test_xero_off_an_account_linked_to_xero_is_minty_s_and_keeps_its_link(client
 
 
 @pytest.mark.django_db
+def test_an_edit_keeps_the_petty_cash_tick_as_it_was(client, user, entity):
+    """Switched off for Petty Cash, an account stays off when it is edited (an edit re-ticked it until
+    2026-11-27); a new account starts ticked."""
+    added = call(client, user, entity, "post", "/accounts", {"code": "470", "name": "Fuel", "type": "expense"})
+    fuel = added.json()["account"]["id"]
+    assert EntityAccountXero.objects.get(account_id=fuel).is_active is True
+    EntityAccountXero.objects.filter(account_id=fuel).update(is_active=False)
+    assert call(client, user, entity, "patch", f"/accounts/{fuel}",
+                {"code": "471", "name": "Fuel and parking", "type": "expense"}).status_code == 200
+    tick = EntityAccountXero.objects.get(account_id=fuel)
+    assert (tick.is_active, tick.name) == (False, "Fuel and parking")
+
+
+@pytest.mark.django_db
 def test_while_a_matching_is_open_a_linked_account_or_contact_waits(client, user, disconnected):
     """The matching is choosing each account's Xero account (the user, 2026-11-27): a linked row
     waits until it is finished or closed; Minty's own still change."""
@@ -387,7 +401,8 @@ def test_a_live_companys_contact_links_to_xeros_of_that_name_else_is_made_there(
                                status="ACTIVE")
     linked = call(client, user, live, "post", "/contacts", {"name": "SAM'S FISH"})
     assert linked.status_code == 201 and xero.sent == []  # no duplicate in Xero
-    assert XeroContactSync.objects.get(entity_id=live.id, name="SAM'S FISH").xero_contact_id == "x-sam"
+    # Xero's name at the link (the user, 2026-11-27), never a silent flip at the next sync
+    assert XeroContactSync.objects.get(entity_id=live.id, xero_contact_id="x-sam").name == "Sam's Fish"
     assert linked.json()["contact"]["xero_id"] == "x-sam"
 
     call(client, user, live, "post", "/contacts", {"name": "Kee Wah"})
@@ -405,7 +420,22 @@ def test_a_live_company_links_the_contact_xero_has_of_that_name_never_a_twin(cli
                   {"ContactID": "x-kee", "Name": "KEE  WAH", "ContactStatus": "ACTIVE"}]
     resp = call(client, user, live, "post", "/contacts", {"name": "Kee Wah"})
     assert resp.status_code == 201 and resp.json()["contact"]["xero_id"] == "x-kee"
+    assert resp.json()["contact"]["name"] == "KEE  WAH", "Xero's name at the link"
     assert xero.sent == []
+
+
+@pytest.mark.django_db
+def test_a_minty_contact_put_in_xero_takes_xeros_name_and_its_bills_follow(client, user, live, xero):
+    """C5: a contact made in Minty while offline, added again while live, is linked to Xero's of its
+    name - and takes that name at once, its bills relabelled (the user, 2026-11-27)."""
+    own = contact(live, "kee wah")
+    bill = Bill.objects.create(entity_id=live.id, reference="B-KEE", contact_id=own.id, contact_name="kee wah")
+    xero.found = [{"ContactID": "x-kee", "Name": "Kee Wah", "ContactStatus": "ACTIVE"}]
+    found, how = chart.find_or_make_contact(user.id, live, "Kee Wah", "token")  # the pickers' "+ Add"
+    assert (found.id, how) == (own.id, "found")
+    own.refresh_from_db()
+    assert (own.xero_contact_id, own.name) == ("x-kee", "Kee Wah")
+    assert Bill.objects.get(id=bill.id).contact_name == "Kee Wah"
 
 
 @pytest.mark.django_db

@@ -544,6 +544,16 @@ def test_xero_off_an_account_from_xero_is_changed_here_and_keeps_its_link(client
 
 
 @pytest.mark.django_db
+def test_the_wizards_edit_keeps_the_petty_cash_tick_as_it_was(client, auth, minty):
+    own = _add(client, auth, minty, code="405", name="Rent", type="expense").json()["account"]
+    EntityAccountXero.objects.filter(account_id=own["id"]).update(is_active=False)
+    resp = patch(client, auth, f"/accounts/{own['id']}",
+                 {"entity_id": str(minty.id), "code": "406", "name": "Office rent", "type": "expense"})
+    assert resp.status_code == 200, resp.json()
+    assert EntityAccountXero.objects.get(account_id=own["id"]).is_active is False
+
+
+@pytest.mark.django_db
 def test_while_a_matching_is_open_an_account_from_xero_waits(client, auth, minty):
     Entity.objects.filter(id=minty.id).update(xero_org_id="ORG-1", status="disconnected",
                                               xero_matching="new_accounts")
