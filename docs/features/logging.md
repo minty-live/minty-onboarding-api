@@ -30,5 +30,15 @@ Both also go to stderr, which is what Render keeps.
 - **Context is cleared** at the end of each request (`logctx.reset()`), so a reused worker never
   prints the previous caller.
 
+**Refusals say why (2026-11-27).** The access line says only `POST ... 400`, so every answer the
+step routes refuse (`api_accounting._answer`/`_changed`, `api_pettycash._answer`, through
+`onboarding/answers.py`) also logs its sentence once: `refused 400: <sentence>` at INFO, or
+`failed 502: <sentence>` at WARNING for a 5xx answer, plus `fields=[...]` (names only, never values)
+for a per-field refusal. Xero ticks the list doesn't offer (X3's "Reload the list" refusal) add
+`xero ticks refused: entity=… kind=… sent=N offered=N reasons={…} ids=[first 5]`, a count per
+`not_found` (another company's, or gone - a sync removed it), `archived`, `system`, `other_kind`,
+`no_xero_id`. Production, 2026-11-26: three 400s in a row on X3 left no way to tell which refusal
+it was. Tests: `tests/test_accounting_xero.py`.
+
 Tests: `tests/test_logging.py`. When you add a log call, keep ids the line already carries out of the message;
 a row id (`bill=…`, `link=…`) still belongs in it.

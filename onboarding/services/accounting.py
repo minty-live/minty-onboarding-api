@@ -1014,6 +1014,38 @@ def save_accounts(user_id, entity_id, kind, template_ids, rows) -> tuple[dict, i
 NOT_CONNECTED = {"error": "Connect Xero first, then choose the accounts Minty uses."}
 
 
+def _log_not_offered(entity_id, kind, wanted: set, refused: set, offered: int) -> None:
+    """Why each tick the list doesn't offer was refused (production, 2026-11-26: three "Reload the
+    list" refusals in a row after Refresh, cause unknown): ``not_found`` (another company's, or gone
+    - a sync removed it), ``archived``, ``system``, ``other_kind``, ``no_xero_id``; and the first five
+    refused ids."""
+    import uuid
+
+    known = {}
+    for i in refused:
+        try:
+            known[i] = uuid.UUID(i)
+        except ValueError:
+            pass
+    found = {str(a.id): a for a in AccountInfo.objects.filter(entity_id=entity_id, id__in=list(known.values()))}
+    reasons: dict = {}
+    for i in refused:
+        a = found.get(i)
+        if a is None:
+            why = "not_found"
+        elif a.record_status != "active":
+            why = "archived"
+        elif a.is_system:
+            why = "system"
+        elif a.account_type not in KINDS[kind]:
+            why = "other_kind"
+        else:
+            why = "no_xero_id"
+        reasons[why] = reasons.get(why, 0) + 1
+    logger.info("xero ticks refused: entity=%s kind=%s sent=%s offered=%s reasons=%s ids=%s", entity_id, kind,
+                len(wanted), offered, dict(sorted(reasons.items())), sorted(refused)[:5])
+
+
 def set_xero_ticks(user_id, entity_id, kind, account_ids) -> tuple[dict, int]:
     """Exactly ``account_ids`` of the company's Xero ``kind`` accounts ticked for Petty Cash: its
     ``account_module`` rows, and for expenses ``entity_account_xero`` too (the apps' old reader)."""
@@ -1038,6 +1070,7 @@ def set_xero_ticks(user_id, entity_id, kind, account_ids) -> tuple[dict, int]:
     )
     by_id = {str(a.id): a for a in rows}
     if not wanted <= set(by_id):
+        _log_not_offered(entity_id, kind, wanted, wanted - set(by_id), len(rows))
         return {"error": f"Pick only {noun} accounts here. Reload the list and try again."}, 400
     with transaction.atomic():
         for account in rows:

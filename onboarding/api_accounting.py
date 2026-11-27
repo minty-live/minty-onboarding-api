@@ -10,14 +10,14 @@ from django.http import JsonResponse
 from ninja import Body, Router
 
 from core.permissions import entity_for_member, require_entity_id
+from onboarding.answers import answered
 from onboarding.services import accounting
 
 accounting_router = Router()
 
 
 def _answer(result: tuple[dict, int]) -> JsonResponse:
-    body, status = result
-    return JsonResponse(body, status=status)
+    return answered(*result)
 
 
 def _changed(entity_id, change) -> JsonResponse:
@@ -25,7 +25,7 @@ def _changed(entity_id, change) -> JsonResponse:
     to the sales categories; step 5's methods are free lists again, owner.)"""
     with transaction.atomic():
         body, status = change()
-    return JsonResponse(body, status=status)
+    return answered(body, status)
 
 
 def _entity(request, payload) -> str:

@@ -36,6 +36,7 @@ from django.http import JsonResponse
 from ninja import Body, Router, Schema
 
 from core.permissions import entity_for_member, require_entity_id
+from onboarding.answers import answered
 from onboarding.services import opening_balance as opening_service
 from onboarding.services import sales_methods as sales_service
 from onboarding.services import xero_lists
@@ -120,8 +121,7 @@ def post_opening_balance_skip(request, payload: EntityIn):
 # onboarding/services/xero_lists.py. Each answer is Flask's (status and body).
 # ---------------------------------------------------------------------------
 def _answer(result: tuple[dict, int]) -> JsonResponse:
-    body, status = result
-    return JsonResponse(body, status=status)
+    return answered(*result)
 
 
 def _entity_from(payload) -> str:
